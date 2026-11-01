@@ -56,7 +56,9 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 ## Development
 
-`pnpm check` runs the typecheck, the tests and the build. `pnpm pack` produces the installable bundle used by `dsh plugin add`.
+`pnpm check` runs the typecheck, the tests and the build. `pnpm pack` produces the installable
+bundle used by `dsh plugin add`. A fresh clone has no `lib/` (it is built, not committed), so run
+`pnpm install && pnpm build` first.
 
 ## License
 
