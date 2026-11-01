@@ -445,6 +445,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/dsh-source.spec.ts` | The local-operator Source: one user message becomes a direct Trigger, a reply goes back through the Channel, and an instance config defaults the workspace to empty |
+| `tests/executor-sessions.spec.ts` | Two invariants of Session ownership: a worker is created and rebuilt in the directory its Ticket records, and a request for one workspace's main Session never opens the default one when it fails |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 
 `tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.

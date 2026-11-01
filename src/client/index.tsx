@@ -97,7 +97,9 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
   }
   // 点开某个工作区的主子；没带工作区时退回默认那一条。
   const open = async (workspaceId?: string) => {
-    const id = (workspaceId ? await masterOf(workspaceId) : undefined) ?? (await mainState()).masterId
+    // 指明了工作区就不能退回默认主子：那会让人以为进了 A，实际打开的是默认工作区。
+    // 只有压根没带工作区（比如没有所在组行）时才用默认那条。
+    const id = workspaceId ? await masterOf(workspaceId) : (await mainState()).masterId
     if (!id) return
     // 目标会话可能还没出现在列表里（刚启动），openKnownSession 会等到列表就绪。
     await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, new AbortController().signal)
@@ -131,8 +133,12 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.title = t('mainEntry')
       button.setAttribute('aria-label', t('mainEntry'))
       button.textContent = '★'
-      button.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;'
-        + 'margin:0 2px;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;opacity:.5;'
+      // 绝对定位而不是排在行里：行右侧的动作区（「…」与「＋」）在鼠标移入时才显形，
+      // 一旦占位就会把行里的元素推来推去，按钮在指针下的位置随之改变，点下去会落到隔壁的
+      // 「新建会话」上。脱离布局流之后，行怎么变它都在原处。
+      button.style.cssText = 'position:absolute;right:30px;top:50%;transform:translateY(-50%);'
+        + 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;'
+        + 'margin:0;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;opacity:.5;'
         + 'cursor:pointer;font-size:12px;line-height:1'
       button.addEventListener('mouseenter', () => { button.style.opacity = '1' })
       button.addEventListener('mouseleave', () => { button.style.opacity = '.5' })
@@ -143,10 +149,10 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation() })
       // 阻止冒泡：这一行本身可点击（折叠/展开工作区），点按钮不该顺带切换。
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void open(workspaceOf(button)) })
-      // 动作区是行的最后一个 span（「…」与「＋」），入口排在它左边。
-      const actions = row.querySelector(':scope > span:last-of-type')
-      if (actions) row.insertBefore(button, actions)
-      else row.append(button)
+      // 绝对定位需要一个定位祖先：行默认是 static，补上 relative 即可，别的样式一概不动。
+      if (getComputedStyle(row).position === 'static') row.style.position = 'relative'
+      // 位置由 right 决定，插在行尾即可，不再依赖是哪一段 flex 流。
+      row.append(button)
     }
     void syncHidden()
   }

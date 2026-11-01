@@ -1811,3 +1811,16 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
 })
+
+it('retries a workspace main session whose creation failed instead of remembering the broken id', async () => {
+  // 第一次建会话失败：workspaceRegistry 记录好了，但会话没建出来。
+  const ensure = vi.spyOn(runtime.sessions, 'ensure').mockRejectedValueOnce(new Error('session create failed'))
+  await expect(runtime.masterFor('ws-broken')).rejects.toThrow('session create failed')
+  // 失败必须撤回记账：留着它，下次点 ★ 会直接拿到这条半成品会话，再也不会重试创建，
+  // 重启后还会从 KV 里把它读回来，变成永久坏掉的一格。
+  expect(runtime.masterIds()).toEqual([runtime.masterId])
+  const id = await runtime.masterFor('ws-broken')
+  expect(id).toBe(`orchestrator-${key('ws-broken')}`)
+  expect(runtime.masterIds()).toContain(id)
+  ensure.mockRestore()
+})

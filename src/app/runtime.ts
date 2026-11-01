@@ -267,12 +267,27 @@ export class Runtime extends Service implements SourceHost {
     const id = `orchestrator-${key(workspace.path)}`
     // 记账要排在 ensure 之前：建会话会立刻触发 agent/created → decorate，
     // 那一刻它得已经被认成主子，才会挂上编排者的 preset 与路由工具。
+    const previous = this.masters.get(workspaceId)
     this.remember(workspaceId, id)
-    await this.sessions.ensure(id, workspace.path, `${this.machine.sessionTitle} · ${workspace.title}`, 'orchestrator')
+    try {
+      await this.sessions.ensure(id, workspace.path, `${this.machine.sessionTitle} · ${workspace.title}`, 'orchestrator')
+    } catch (error) {
+      // 建失败就把记账撤回：留着它，下次点 ★ 会直接拿到这条半成品会话，再也不会重试创建；
+      // 重启后还会从 KV 里把它读回来，变成永久坏掉的一格。
+      if (previous === undefined) this.forget(workspaceId)
+      else this.remember(workspaceId, previous)
+      throw error
+    }
     // 和默认那条一样先投一句：否则它是一条空会话，侧栏不列、打开也看不出是什么。
     await this.sessions.prompt(id, 'main-session-ready', MAIN_READY, 'queue').catch(() => { /* 暂时不可投递时忽略，下次打开再补。 */ })
     this.remember(workspaceId, id)
     return id
+  }
+
+  /** 撤掉某个工作区的记账（创建失败时回滚，下次点击会重新尝试）。 */
+  private forget(workspaceId: string): void {
+    if (!this.masters.delete(workspaceId)) return
+    this.store.set(KV.runtime.masters, Object.fromEntries(this.masters))
   }
 
   /** 记下"这个工作区的主子是这条会话"，并立刻存盘。 */

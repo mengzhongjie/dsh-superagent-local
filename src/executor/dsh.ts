@@ -337,7 +337,9 @@ export class DshExecutor implements Executor {
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, this.host.machine.workspace || this.host.machine.stateDir, ticket.title, 'worker')
+            // 重建要和首次启动落在同一个目录，否则非默认工作区的 worker 被删掉后
+            // 会在别的目录里复活，读写的相对路径全错。
+            await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), ticket.title, 'worker')
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -445,7 +447,26 @@ export class DshExecutor implements Executor {
       this.relay(resultRelay(updated, 'failed', summary))
     })
   }
-  private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
+  private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text, this.homeOf(id)) }
+
+  /**
+   * worker 会话的工作目录。
+   *
+   * 首次启动和"被删掉后重建"必须用同一个值：会话工作目录一旦漂移，worker 之前在
+   * 哪个目录里干活就说不清了，相对路径全部失效。执行目录来自 Ticket，没有记录时
+   * 才退回全局工作区。
+   */
+  private workerDirectory(ticket: Ticket): string {
+    return ticket.execution?.directory ?? this.host.machine.workspace ?? this.host.machine.stateDir
+  }
+
+  /** 这张工单是谁发起的，报告就回谁那条主会话；不是本地来源时没有归属，交回默认主子。 */
+  private homeOf(ticketId: string): string | undefined {
+    const ticket = this.host.store.tickets.get(ticketId)
+    const trigger = ticket === undefined ? undefined : sourceTrigger(this.host, ticket)
+    const thread = trigger?.source === 'dsh' ? trigger.threads[0] : undefined
+    return thread === undefined ? undefined : String(thread.id)
+  }
   private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
     const current = () => {
       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
@@ -468,7 +489,7 @@ export class DshExecutor implements Executor {
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
     // 会话工作目录必须与 Ticket 中记录的执行目录一致。
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), ticket.title, 'worker')
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
