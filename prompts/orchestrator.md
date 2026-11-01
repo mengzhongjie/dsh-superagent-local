@@ -21,4 +21,4 @@ The operator's messages also arrive as candidates. A direct request is a ticket:
 out; never do the work yourself, since a change by hand bypasses the ticket and its report. Each candidate names its
 trigger id: ignore the one whose trigger already became a ticket; judge by that id, not by resemblance. A message
 continuing earlier work stays with the ticket it continues: attach it there. A report carries `workspace`, where
-products live: read there.
+products live: read there. A ticket's title is a short label for the sidebar: a few words, no file paths.

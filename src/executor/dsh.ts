@@ -82,6 +82,17 @@ export interface ExecutorHost {
   repliedTo(trigger: Trigger): Trigger | undefined
 }
 /** Looks up a ticket's origin trigger in Store. */
+/**
+ * 侧栏里给 Worker 会话起名用的一小截：去掉绝对路径只留目录名、只取第一个短语，最长 24 字。
+ * 工单本身的 title 不动 —— 它要表达完整需求，这里只是让侧栏那一行好看。
+ */
+export function shortTitle(title: string): string {
+  const flattened = title.replace(/\/[^\s，,。、；;！!？?\n]+/g, path => path.split('/').filter(Boolean).at(-1) ?? '')
+  const head = flattened.split(/[，,。；;！!？?\n]/)[0]?.trim() ?? ''
+  const label = (head || flattened.trim()).replace(/\s+/g, ' ')
+  return label.length <= 28 ? label : `${label.slice(0, 27)}…`
+}
+
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
   host.store.triggers.get(ticket.origin.triggerId)
 
@@ -339,7 +350,7 @@ export class DshExecutor implements Executor {
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             // 重建要和首次启动落在同一个目录，否则非默认工作区的 worker 被删掉后
             // 会在别的目录里复活，读写的相对路径全错。
-            await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), ticket.title, 'worker')
+            await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), shortTitle(ticket.title), 'worker')
           }
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
@@ -497,7 +508,7 @@ export class DshExecutor implements Executor {
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
     // 会话工作目录必须与 Ticket 中记录的执行目录一致。
-    const agent = await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, this.workerDirectory(ticket), shortTitle(ticket.title), 'worker')
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)

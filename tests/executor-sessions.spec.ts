@@ -1,3 +1,4 @@
+import { shortTitle } from '../src/executor/dsh.ts'
 /** 会话归属的两条硬规则：worker 目录不漂移，点击失败不冒充成功。 */
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
@@ -30,4 +31,13 @@ it('relays a report to the session that asked for the ticket, never to the defau
   // worker 自己上报的状态报告同样要回发起它的主会话。
   expect(tools).toContain('host.sessions.relay(relay.id, relay.text, homeOf(host.store, ticket))')
   expect(tools).toContain("const trigger = store.triggers.get(ticket.origin.triggerId)")
+})
+
+it('names a worker session with a short label instead of the whole request', async () => {
+  // 侧栏那一行只留一小截：绝对路径换成目录名，只取第一个短语，最长 28 字。
+  expect(shortTitle('在闲聊目录下新建 multi-master.txt，写入两行：第一行 multi-master-ok')).toBe('在闲聊目录下新建 multi-master.txt')
+  expect(shortTitle('统计 /Users/example/Documents/闲聊 下所有 .md 文件的行数，逐个文件列出')).toBe('统计 闲聊 下所有 .md 文件的行数')
+  expect(shortTitle('  读  项目入口.md  ')).toBe('读 项目入口.md')
+  expect(shortTitle('x'.repeat(40))).toHaveLength(28)
+  expect(shortTitle('/a/b/c.txt')).toBe('c.txt')
 })
