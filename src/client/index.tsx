@@ -133,13 +133,11 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.title = t('mainEntry')
       button.setAttribute('aria-label', t('mainEntry'))
       button.textContent = '★'
-      // 绝对定位而不是排在行里：行右侧的动作区（「…」与「＋」）在鼠标移入时才显形，
-      // 一旦占位就会把行里的元素推来推去，按钮在指针下的位置随之改变，点下去会落到隔壁的
-      // 「新建会话」上。脱离布局流之后，行怎么变它都在原处。
-      button.style.cssText = 'position:absolute;right:30px;top:50%;transform:translateY(-50%);'
-        + 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;'
-        + 'margin:0;padding:0;border:0;border-radius:4px;background:transparent;color:inherit;opacity:.5;'
-        + 'cursor:pointer;font-size:12px;line-height:1'
+      // 排在行的最后一个子元素上（动作区之后），既不会被动作区的显形推走，也不会压住它：
+      // 行内元素的横坐标由前面内容的宽度决定，最后一个则贴着右边界算，前面怎么变都不动。
+      button.style.cssText = 'display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;'
+        + 'width:18px;height:18px;margin:0 0 0 2px;padding:0;border:0;border-radius:4px;'
+        + 'background:transparent;color:inherit;opacity:.5;cursor:pointer;font-size:12px;line-height:1'
       button.addEventListener('mouseenter', () => { button.style.opacity = '1' })
       button.addEventListener('mouseleave', () => { button.style.opacity = '.5' })
       // 这一行整行可拖拽（draggable="true"）：鼠标按下如果冒泡到行上就会启动原生拖拽，
@@ -149,9 +147,8 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation() })
       // 阻止冒泡：这一行本身可点击（折叠/展开工作区），点按钮不该顺带切换。
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void open(workspaceOf(button)) })
-      // 绝对定位需要一个定位祖先：行默认是 static，补上 relative 即可，别的样式一概不动。
-      if (getComputedStyle(row).position === 'static') row.style.position = 'relative'
-      // 位置由 right 决定，插在行尾即可，不再依赖是哪一段 flex 流。
+      // 追加到行尾（动作区「…」「＋」之后）：最后一个子元素贴着右边界排，
+      // 动作区在鼠标移入时显形也不会改变它的位置。
       row.append(button)
     }
     void syncHidden()
