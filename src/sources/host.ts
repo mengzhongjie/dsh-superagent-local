@@ -40,7 +40,11 @@ export interface OrchestratorPorts {
   /** 某条主子管的工作区目录；本地 Source 用它决定这条需求落在哪个目录。 */
   workspaceOf(sessionId: string): string | undefined
   /** 幂等投递一条回复到主会话（同 requestId 只产生一条消息）。 */
-  prompt(requestId: string, text: string): Promise<void>
+  /**
+   * 把一条消息投进主会话。sessionId 指定投给哪一条：本地 Source 的 channel 地址里
+   * 记着用户的会话 id，缺了它就只能投给默认主子，多主会话下等于发错人。
+   */
+  prompt(requestId: string, text: string, sessionId?: string): Promise<void>
   /** 摄取一条 Trigger；内部负责去重、作用域过滤，并按需排队评估。 */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
 }

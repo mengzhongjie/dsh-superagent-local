@@ -146,7 +146,8 @@ export function dshTrigger(input: {
  */
 export interface DshDelivery {
   /** 幂等投递一条回复到主会话；同一个 id 重复调用不应产生两条消息。 */
-  deliver(id: string, text: string): Promise<void>
+  /** sessionId 省略时投给默认主子；本地消息都带得上，别的来源才没有。 */
+  deliver(id: string, text: string, sessionId?: string): Promise<void>
 }
 
 /** 面板字段：工作区路径，带填写提示。 */
@@ -192,7 +193,9 @@ export function dshKind(delivery: DshDelivery): SourceKind<DshConfig> {
        * 永远返回 sent：主会话在本进程里，投递失败会抛错（让 Outbox 重试），而不是 gone。
        */
       send: async (_host, message: OutboundMessage): Promise<'sent' | 'gone'> => {
-        await delivery.deliver(message.id, message.text)
+        // 地址里记着这条消息是从哪条主会话来的：回复必须回到那里，而不是默认主子。
+        const address = message.channel.address as { sessionId?: string } | undefined
+        await delivery.deliver(message.id, message.text, address?.sessionId)
         return 'sent'
       },
       /** 本地会话没有可点击的 URL，返回空链接。 */
@@ -264,9 +267,9 @@ export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
   // 回复投递：主会话就是编排器自己的会话，用 sessions.prompt 幂等投递一条 steer 消息。
   const delivery: DshDelivery = {
-    async deliver(id, text) {
+    async deliver(id, text, sessionId) {
       const orchestrator = ctx.orchestrator
-      await orchestrator.prompt(id, text)
+      await orchestrator.prompt(id, text, sessionId)
     },
   }
 

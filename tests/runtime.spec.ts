@@ -1824,3 +1824,32 @@ it('retries a workspace main session whose creation failed instead of rememberin
   expect(runtime.masterIds()).toContain(id)
   ensure.mockRestore()
 })
+
+it('hands a second caller the same main session while the first is still creating it', async () => {
+  // 建会话卡在半路：两次点击紧挨着发生时，第二次必须等第一次建完，
+  // 而不是从记账里读到那条还没建好的会话 id。
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const ensure = vi.spyOn(runtime.sessions, 'ensure').mockImplementation((async () => { await gate }) as never)
+  const first = runtime.masterFor('ws-slow')
+  const second = runtime.masterFor('ws-slow')
+  // 同一个 promise：并发调用共用一次创建，不会一个拿半成品、一个另起一次。
+  expect(second).toBe(first)
+  release?.()
+  expect(await first).toBe(`orchestrator-${key('ws-slow')}`)
+  expect(await second).toBe(`orchestrator-${key('ws-slow')}`)
+  expect(ensure).toHaveBeenCalledTimes(1)
+  ensure.mockRestore()
+})
+
+it('rebuilds a main session deleted outside instead of pinning the dead one', async () => {
+  const id = await runtime.masterFor('ws-gone')
+  // 会话被外部删掉了：补投开场白会失败，不能就这么让记账永远指向一条不存在的会话。
+  const prompt = vi.spyOn(runtime.sessions, 'prompt').mockRejectedValueOnce(new Error('unknown session'))
+  const ensure = vi.spyOn(runtime.sessions, 'ensure')
+  expect(await runtime.masterFor('ws-gone')).toBe(id)
+  // 重建走的是 ensure；id 由路径推出，所以还是同一个。
+  expect(ensure).toHaveBeenCalledTimes(1)
+  prompt.mockRestore()
+  ensure.mockRestore()
+})

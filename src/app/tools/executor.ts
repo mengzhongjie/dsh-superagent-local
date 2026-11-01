@@ -12,12 +12,20 @@ import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
-  readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
+  // triggers 用来算这张工单的归属：报告要回发起它的那条主会话，而不是默认主子。
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
   readonly github: SourceContext
   sendReplies(): Promise<void>
+}
+
+/** 本地操作者发起的工单回他那条主会话；其他来源没有可回的会话，交回默认主子。 */
+const homeOf = (store: Pick<Store, 'triggers'>, ticket: Ticket): string | undefined => {
+  const trigger = store.triggers.get(ticket.origin.triggerId)
+  const thread = trigger?.source === 'dsh' ? trigger.threads[0] : undefined
+  return thread === undefined ? undefined : String(thread.id)
 }
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
@@ -95,7 +103,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}) }
           const updated = host.engine.report(ticketId, report)
           const relay = reportRelay(updated, report)
-          if (relay) host.sessions.relay(relay.id, relay.text)
+          // 第三个参数是归属会话：缺了它报告会静默进默认主子，在多主会话下就等于发错人。
+          if (relay) host.sessions.relay(relay.id, relay.text, homeOf(host.store, ticket))
           const notification = relay ? 'orchestrator' : 'internal_only'
           return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }
         })

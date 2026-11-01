@@ -246,15 +246,23 @@ export class Runtime extends Service implements SourceHost {
    * 工作区自己的目录，所以那条会话天然就在这个组的上下文里干活。
    */
   masterFor(workspaceId: string): Promise<string> {
+    // 正在建就先等它。建的过程中记账已经写上（decorate 那一刻就得认得出它是主子），
+    // 于是查映射会拿到一条还没建完的会话；建失败就变成一格指向半成品的死账。
+    const pending = this.spawning.get(workspaceId)
+    if (pending !== undefined) return pending
     const known = this.masters.get(workspaceId)
     if (known !== undefined) {
       // 已经建过的那条也补投一次开场白：requestId 固定，投过的不会重复产生消息，
       // 但从旧版本升上来的那条可能是空的，补一次它才会出现在侧栏里。
-      void this.sessions.prompt(known, 'main-session-ready', MAIN_READY, 'queue').catch(() => {})
-      return Promise.resolve(known)
+      // 投不进去说明这条会话已经被外部删掉了：清掉记账重来一次，否则这一格永远指向不存在的会话。
+      // 重建用的 id 由路径推出，ensure 对已存在的会话幂等，所以不会平白多建一条。
+      return this.sessions.prompt(known, 'main-session-ready', MAIN_READY, 'queue').then(
+        () => known,
+        () => {
+          this.forget(workspaceId)
+          return this.masterFor(workspaceId)
+        })
     }
-    const pending = this.spawning.get(workspaceId)
-    if (pending !== undefined) return pending
     const spawned = this.spawnMaster(workspaceId).finally(() => { this.spawning.delete(workspaceId) })
     this.spawning.set(workspaceId, spawned)
     return spawned
@@ -298,7 +306,9 @@ export class Runtime extends Service implements SourceHost {
   }
 
   /** 幂等投递一条消息到主会话；本地 Source 用它把回复送回操作者。 */
-  prompt(requestId: string, text: string): Promise<void> { return this.sessions.prompt(this.masterId, requestId, text, 'steer') }
+  prompt(requestId: string, text: string, sessionId?: string): Promise<void> {
+    return this.sessions.prompt(sessionId ?? this.masterId, requestId, text, 'steer')
+  }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
   sendReplies(): Promise<void> { return this.outbox.sent() }

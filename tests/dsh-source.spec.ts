@@ -38,9 +38,12 @@ it('turns one operator message into a direct Trigger on that Session', () => {
 it('sends a reply back to the Session that asked', async () => {
   const deliver = vi.fn(async () => {})
   const kind = dshKind({ deliver })
-  const result = await kind.channel?.send({} as never, { id: 'r-1', text: '收到，已经建 Ticket' } as OutboundMessage)
+  const message = { id: 'r-1', text: '收到，已经建 Ticket',
+    channel: { source: SOURCE, thread: 's-1', address: { sessionId: 's-1' } } } as OutboundMessage
+  const result = await kind.channel?.send({} as never, message)
   expect(result).toBe('sent')
-  expect(deliver).toHaveBeenCalledWith('r-1', '收到，已经建 Ticket')
+  // 第三个参数是归属会话：缺了它回复会进默认主子，多主会话下等于发错人。
+  expect(deliver).toHaveBeenCalledWith('r-1', '收到，已经建 Ticket', 's-1')
 })
 
 // —— 实例配置：workspace 可留空，留空表示用执行器默认目录 ——

@@ -444,10 +444,18 @@ export class DshExecutor implements Executor {
   private failed(ticketId: string, summary: string): void {
     this.host.store.atomic(() => {
       const updated = this.host.engine.report(ticketId, { state: 'failed', summary })
-      this.relay(resultRelay(updated, 'failed', summary))
+      this.relay(resultRelay(updated, 'failed', summary), ticketId)
     })
   }
-  private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text, this.homeOf(id)) }
+  /**
+   * 把一条报告投给发起这张工单的主会话。
+   *
+   * ticketId 必须由调用方显式给出：relay 自己的 id 是报告 id（`report:...`），
+   * 拿它去查 Ticket 一定查不到，报告就会静默退回默认主子。
+   */
+  private relay(relay: { id: string; text: string }, ticketId: string): void {
+    this.host.sessions.relay(relay.id, relay.text, this.homeOf(ticketId))
+  }
 
   /**
    * worker 会话的工作目录。
@@ -715,9 +723,9 @@ export class DshExecutor implements Executor {
       const before = latestReport(current)?.summary ?? ''
       const updated = this.host.engine.report(ticket.id, { state: 'waiting', summary: said || before })
       // A quiet final after orchestrator_report is not a new status or an empty handoff.
-      if (said) this.relay(resultRelay(updated, 'waiting', said))
+      if (said) this.relay(resultRelay(updated, 'waiting', said), ticket.id)
       else if (!before.trim()) {
-        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
+        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'), ticket.id)
       }
     })
   }

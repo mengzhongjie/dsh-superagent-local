@@ -18,3 +18,16 @@ it('does not open the default main session when the asked workspace has none', (
   expect(code).not.toMatch(/workspaceId \? await masterOf\(workspaceId\) : undefined\) \?\?/)
   expect(code).toContain('const id = workspaceId ? await masterOf(workspaceId) : (await mainState()).masterId')
 })
+
+it('relays a report to the session that asked for the ticket, never to the default one', () => {
+  const executor = readFileSync(new URL('../src/executor/dsh.ts', import.meta.url), 'utf8')
+  const tools = readFileSync(new URL('../src/app/tools/executor.ts', import.meta.url), 'utf8')
+  // relay 自己的 id 是报告 id（report:...），拿它查 Ticket 一定查不到 —— 归属必须由调用方给 ticketId。
+  expect(executor).toContain('private relay(relay: { id: string; text: string }, ticketId: string): void')
+  expect(executor).not.toContain('this.homeOf(id)')
+  expect(executor).toContain("this.relay(resultRelay(updated, 'failed', summary), ticketId)")
+  expect(executor).toContain("this.relay(resultRelay(updated, 'waiting', said), ticket.id)")
+  // worker 自己上报的状态报告同样要回发起它的主会话。
+  expect(tools).toContain('host.sessions.relay(relay.id, relay.text, homeOf(host.store, ticket))')
+  expect(tools).toContain("const trigger = store.triggers.get(ticket.origin.triggerId)")
+})
