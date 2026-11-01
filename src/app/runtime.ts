@@ -45,6 +45,10 @@ import { Setup } from './setup.ts'
  * DSH 的侧栏只列有过消息的会话，空会话不出现；而且打开一条空会话看到的是新建页，
  * 看不出它是"某个工作区的主子"。所以每条主子建好后都投这一句，requestId 固定，重启幂等。
  */
+/** 认得出的「这条会话不在了」：只有这种错误才值得重建，其他失败都按临时故障处理。 */
+const missingSession = (error: unknown): boolean =>
+  /unknown session|session not found|no such session/i.test(String((error as { message?: string } | undefined)?.message ?? error))
+
 const MAIN_READY = '（就绪）这里是 dsh-superagent 的主会话。把需求直接发在这里：我会先判断它该不该做成工单，再派给执行器去干。'
 import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type OrchestratorPorts, type SourceContext, type SourceHost } from '../sources/host.ts'
@@ -258,8 +262,12 @@ export class Runtime extends Service implements SourceHost {
       // 重建用的 id 由路径推出，ensure 对已存在的会话幂等，所以不会平白多建一条。
       return this.sessions.prompt(known, 'main-session-ready', MAIN_READY, 'queue').then(
         () => known,
-        () => {
-          this.forget(workspaceId)
+        (error: unknown) => {
+          // 临时失败不动记账：投递超时、宿主忙都重建成新会话，会把用户正用着的那条踢掉。
+          if (!missingSession(error)) throw error
+          // 只在映射还指着这条失效会话时清：两个请求并发失败时，先到的那个可能已经重建好并写了新映射，
+          // 后到的这个不能把它再删掉。
+          this.forgetIf(workspaceId, known)
           return this.masterFor(workspaceId)
         })
     }
@@ -290,6 +298,14 @@ export class Runtime extends Service implements SourceHost {
     await this.sessions.prompt(id, 'main-session-ready', MAIN_READY, 'queue').catch(() => { /* 暂时不可投递时忽略，下次打开再补。 */ })
     this.remember(workspaceId, id)
     return id
+  }
+
+  /** 只在记账仍指向这条会话时撤掉它；已经被换成别的会话就什么都不做。 */
+  private forgetIf(workspaceId: string, sessionId: string): void {
+    // 有人已经在重建这一格：别动它的记账，两个失败回调来回删会把新账删没。
+    if (this.spawning.has(workspaceId)) return
+    if (this.masters.get(workspaceId) !== sessionId) return
+    this.forget(workspaceId)
   }
 
   /** 撤掉某个工作区的记账（创建失败时回滚，下次点击会重新尝试）。 */

@@ -293,6 +293,27 @@ describe('resume and stop', () => {
     else h.engine.stopTicket(decision.ticketId!)
     return decision.ticketId!
   }
+  it('folds an operator message into the ticket still running and leaves an ended one alone even when the source asks for one ticket per request', async () => {
+    const h = harness()
+    const decision = accepted(h)
+    const ticketId = decision.ticketId!
+    // 工单还在跑：补的一句话交给同一个 Worker，不另开一张单。
+    expect(h.repo.tickets.get(ticketId)).toBeDefined()
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeUndefined()
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).toContain(ticketId)
+    expect(h.engine.receive(trigger('2', { meta: { newTicket: true } }))).toBe('stored')
+    expect(h.repo.triggers.disposition('2')?.fanout).toContain(ticketId)
+    // 还是同一张工单，补的那句话作为输入进去了（worker 取走后 inputs 会被清，所以按 triggerId 认）。
+    expect(h.repo.tickets.list()).toHaveLength(1)
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'trigger' && input.triggerId === '2')).toBe(true)
+    // 工单结束：同样标记的消息不复活它，自成一张新单。
+    h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+    expect(h.engine.receive(trigger('3', { meta: { newTicket: true } }))).toBe('stored')
+    // 交给正常建单流程的是 Eval：这里只验它没被塞进那张已结束的工单。
+    expect(h.repo.triggers.disposition('3')?.fanout ?? []).not.toContain(ticketId)
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeDefined()
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'trigger' && input.triggerId === '3')).toBe(false)
+  })
   it('resumes an ended ticket on any person\'s message on its thread, under the same mandate and without a Decision', async () => {
     const h = harness()
     const ticketId = await ended(h, 'executor')

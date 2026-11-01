@@ -38,7 +38,7 @@ it('turns one operator message into a direct Trigger on that Session', () => {
 it('sends a reply back to the Session that asked', async () => {
   const deliver = vi.fn(async () => {})
   const kind = dshKind({ deliver })
-  const message = { id: 'r-1', text: '收到，已经建 Ticket',
+  const message = { id: 'r-1', text: '收到，已经建 Ticket', kind: 'acknowledgement',
     channel: { source: SOURCE, thread: 's-1', address: { sessionId: 's-1' } } } as OutboundMessage
   const result = await kind.channel?.send({} as never, message)
   expect(result).toBe('sent')

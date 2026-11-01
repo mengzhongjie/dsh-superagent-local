@@ -39,9 +39,11 @@ export class Intake extends EnginePart {
       if (!thread.lastAt || trigger.at > thread.lastAt) thread.lastAt = trigger.at
       thread.correlated = [...new Set([...thread.correlated, ...keys.filter(other => other !== thread.key)])]
       for (const ticketId of thread.subscriptions) {
-        // 每条新需求自成一张工单：正在跑的工单不会把它当作补充输入吞掉。
-        if (fresh) continue
         const ticket = this.repo.tickets.get(ticketId)
+        // 标了 newTicket 的来源（本地操作者）：正在跑的那张工单接得住补的一句话，
+        // 交给同一个 Worker —— 否则你改个文件名就会多开一张单、两个 Worker 抢同一份活。
+        // 已经结束的工单仍然不接，一句新需求不该被塞进旧单的下一次重试。
+        if (fresh && (ticket === undefined || !liveTicket(ticket))) continue
         // Only a person's message on a non-context thread resumes an ended ticket; bots and CI do not (the Executor re-reads
         // threads when it resumes), and a human-stopped ticket receives nothing because its Mandate was withdrawn.
         const followed = !!thread.context?.includes(ticketId)

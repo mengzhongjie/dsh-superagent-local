@@ -1842,6 +1842,30 @@ it('hands a second caller the same main session while the first is still creatin
   ensure.mockRestore()
 })
 
+it('keeps the main session when the delivery failed for a reason other than the session being gone', async () => {
+  const id = await runtime.masterFor('ws-flaky')
+  // 投递偶尔失败（宿主忙、连接断）不代表会话没了：把记账清掉重建成一条新会话，
+  // 用户正用着的那条就被踢掉了，历史也跟着断。
+  const prompt = vi.spyOn(runtime.sessions, 'prompt').mockRejectedValueOnce(new Error('transport timeout'))
+  await expect(runtime.masterFor('ws-flaky')).rejects.toThrow('transport timeout')
+  expect(runtime.masterIds()).toContain(id)
+  prompt.mockRestore()
+})
+
+it('rebuilds a deleted main session once when two callers both see it fail', async () => {
+  const id = await runtime.masterFor('ws-dead')
+  // 两个请求同时撞上这条失效会话：先到的清账重建，后到的那个失败回调不能把新记账再删掉，
+  // 否则同一格被建两次，还会有一格指向被删的那条。
+  const prompt = vi.spyOn(runtime.sessions, 'prompt').mockRejectedValueOnce(new Error('unknown session')).mockRejectedValueOnce(new Error('unknown session'))
+  const ensure = vi.spyOn(runtime.sessions, 'ensure')
+  const [first, second] = await Promise.all([runtime.masterFor('ws-dead'), runtime.masterFor('ws-dead')])
+  expect(first).toBe(second)
+  expect(ensure).toHaveBeenCalledTimes(1)
+  expect(runtime.masterIds()).toEqual([runtime.masterId, id])
+  prompt.mockRestore()
+  ensure.mockRestore()
+})
+
 it('rebuilds a main session deleted outside instead of pinning the dead one', async () => {
   const id = await runtime.masterFor('ws-gone')
   // 会话被外部删掉了：补投开场白会失败，不能就这么让记账永远指向一条不存在的会话。
