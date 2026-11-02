@@ -15,6 +15,14 @@ import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
 
+/** English health templates of this kind's codes; the panel shows the localized `feishuKind.healthCodes` labels instead. */
+const FEISHU_HEALTH = {
+  setupPending: 'Waiting for the deployment check',
+  sourceOff: 'Off',
+  feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
+  feishuBotMissing: 'Waiting for the Feishu bot',
+}
+
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>(SOURCE)
@@ -34,7 +42,7 @@ async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
 const chatLink = (ctx: SourceContext, chatId: string): string => feishuChatLink(ctx.deployment.feishu?.brand ?? 'feishu', chatId)
 function available(ctx: SourceContext): boolean {
   if (ctx.configured() && ctx.deployment.feishu) return true
-  const waiting = health('paused', ctx.configured() ? 'feishuCliUnset' : 'setupPending')
+  const waiting = health('paused', ctx.configured() ? 'feishuCliUnset' : 'setupPending', {}, FEISHU_HEALTH)
   ctx.report('feishu', ctx.problem ? { state: 'paused', detail: ctx.problem.detail } : waiting)
   return false
 }
@@ -47,7 +55,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   let retry: number | undefined
   while (!signal.aborted) {
     if (!enabled(ctx)) {
-      ctx.report('feishu', health('paused', 'sourceOff'))
+      ctx.report('feishu', health('paused', 'sourceOff', {}, FEISHU_HEALTH))
       await delay(5000, undefined, { signal }).catch(() => {})
       continue
     }
@@ -84,9 +92,16 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
   })
   stdout.on('line', (line: string) => {
+    // 事件流里会混进空行、心跳或 CLI 自己的日志：空行直接忽略，非 JSON 行只当日志丢掉，
+    // 不要因为一行噪声就把飞书来源报成错误（那会让面板一直亮红灯）。
+    const text = line.trim()
+    if (!text) return
     chain = chain.then(async () => {
-      if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
-      const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
+      if (text.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
+      let payload: unknown
+      try { payload = JSON.parse(text) }
+      catch { return }
+      const trigger = feishuTrigger(payload, bot(ctx).botId, bot(ctx).appId)
       // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
       if (!trigger || !enabled(ctx)) return
       const chats = ctx.state.get(KV.feishu.chats) ?? {}
@@ -127,11 +142,11 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
 }
 async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
-  if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
+  if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing', {}, FEISHU_HEALTH)); return }
   while (!signal.aborted) {
     const config = enabled(ctx)
     if (!config) {
-      ctx.report('history', health('paused', 'sourceOff'))
+      ctx.report('history', health('paused', 'sourceOff', {}, FEISHU_HEALTH))
       await delay(60_000, undefined, { signal }).catch(() => {})
       continue
     }

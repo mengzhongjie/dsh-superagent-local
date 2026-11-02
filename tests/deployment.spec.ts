@@ -40,8 +40,9 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 vi.setConfig({ testTimeout: 30_000 })
 
 describe('configuration schema', () => {
-  it('requires only the state directory and reads the editable fields through references', () => {
-    expect(() => Config({})).toThrow('stateDir')
+  it('defaults the state directory, then reads the editable fields through references', () => {
+    // 默认值兜住「profile 的 patch 漏写 config」这种事故：插件仍能起，路径仍是 <dsh home>/state/superagent。
+    expect(machineOf(Config({})).stateDir).toMatch(/[\\/]state[\\/]superagent$/)
     const read = machineOf(Config({ stateDir: join(dir, 'state') }))
     // Limits are volatile references that the loader updates in place and callers read when used.
     expect({ ...read, promptMaxChars: read.promptMaxChars.get(), admissionContextMaxPages: read.admissionContextMaxPages.get(),
@@ -58,30 +59,30 @@ describe('configuration schema', () => {
 
 describe('setup', () => {
   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
-    const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
-    expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
+    const deployment = await resolveDeployment(machine(), { repositories: [{ repository: 'acme/widgets' }], cli: 'gh' }, probe, path)
+    expect(deployment).toMatchObject({ repositories: ['acme/widgets'], github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })
     expect(deployment.github).toEqual({ cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' })
     expect(deployment).not.toHaveProperty('feishu')
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
-    expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
+    expect((await resolveDeployment(machine(), { repositories: [{ repository: 'acme/gadgets' }], cli: 'gh' }, probe, path)).repositories[0]).toBe('acme/widgets')
   })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
     const repository = 'acme/widgets'
     // 本地工作区模式：没配仓库时不去访问 GitHub，返回一个仓库与账号都为空的本地部署。
-    expect(await resolveDeployment(machine(), { cli: 'gh' }, probe, path)).toMatchObject({ repository: '', github: { cli: '', login: '', noreply: '' } })
-    await needs('github', 'agentCliUnset', {}, { repository })
-    await needs('github', 'agentCliMissing', { output: `${join(dir, 'missing')} is not an executable file` }, { repository, cli: join(dir, 'missing') })
-    await needs('github', 'agentCliMissing', { output: 'bin/gh must be a command name or an absolute path' }, { repository, cli: 'bin/gh' })
-    await needs('github', 'agentCliSignedOut', {}, { repository, cli: program(join(dir, 'bin', 'gh-broken'), 'exit 1') })
-    await needs('github', 'repositoryReadOnly', { account: 'Agent-Bot', repository: 'acme/widgets' }, { repository, cli: gh(join(dir, 'bin', 'gh-reader'), 'Agent-Bot', false) })
+    expect(await resolveDeployment(machine(), { cli: 'gh' }, probe, path)).toMatchObject({ repositories: [], github: { cli: '', login: '', noreply: '' } })
+    await needs('github', 'agentCliUnset', {}, { repositories: [{ repository }] })
+    await needs('github', 'agentCliMissing', { output: `${join(dir, 'missing')} is not an executable file` }, { repositories: [{ repository }], cli: join(dir, 'missing') })
+    await needs('github', 'agentCliMissing', { output: 'bin/gh must be a command name or an absolute path' }, { repositories: [{ repository }], cli: 'bin/gh' })
+    await needs('github', 'agentCliSignedOut', {}, { repositories: [{ repository }], cli: program(join(dir, 'bin', 'gh-broken'), 'exit 1') })
+    await needs('github', 'repositoryReadOnly', { account: 'Agent-Bot', repository: 'acme/widgets' }, { repositories: [{ repository }], cli: gh(join(dir, 'bin', 'gh-reader'), 'Agent-Bot', false) })
     // Signed in, but the account cannot read the repository, or the CLI names no account.
     const unreadable = program(join(dir, 'bin', 'gh-outsider'),
       `case "$*" in\n  "api user") echo '{"login":"Agent-Bot","id":7}' ;;\n  *) echo 'HTTP 404' >&2; exit 1 ;;\nesac`)
     const output = expect.stringContaining('HTTP 404') as unknown
-    await needs('github', 'repositoryUnreadable', { account: 'Agent-Bot', repository: 'acme/widgets', output }, { repository, cli: unreadable })
-    await needs('github', 'agentCliNoAccount', {}, { repository, cli: program(join(dir, 'bin', 'gh-anonymous'), `echo '{}'`) })
+    await needs('github', 'repositoryUnreadable', { account: 'Agent-Bot', repository: 'acme/widgets', output }, { repositories: [{ repository }], cli: unreadable })
+    await needs('github', 'agentCliNoAccount', {}, { repositories: [{ repository }], cli: program(join(dir, 'bin', 'gh-anonymous'), `echo '{}'`) })
     expect(() => executable('nothing-here', join(dir, 'bin'))).toThrow('nothing-here is not an executable file on PATH')
   })
   it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {

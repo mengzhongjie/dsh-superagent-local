@@ -6,11 +6,11 @@
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
-    # Optional Feishu Source; requires configuring a bot CLI after enabling.
+    # 飞书 IM 来源：群消息与私聊进工单。没有配置机器人 CLI 时它自己报「未设置机器人 CLI」，
+    # 不影响别的来源，所以默认开着，让人能直接在设置里填。
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch
-      disabled: true
-    # 本地 Source：把操作者在主会话里说的话当作需求来源；一个实例绑定一个工作区。
+    # 本地 Source：把操作者在主会话里说的话当作需求来源；一个实例覆盖所有工作区。
     - id: dsh-superagent-dsh
       name: dsh-superagent/local-watch
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.

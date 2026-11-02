@@ -112,6 +112,12 @@ export class Engine {
       const handedBack = this.repo.triggers.disposition(triggerId)?.handbacks?.some(item => item.ticketId === ticketId)
       if (handedBack) throw new UserError('handedBackHere')
       const trigger = this.tickets.attachable(ticketId, triggerId)
+      // 本地操作者的每条消息都是一个新请求（`meta.newTicket`）：已经结束的工单不接它 ——
+      // 想重跑同一个需求就再开一张单，而不是让旧单带着旧交付被复活一次。
+      const target = this.repo.tickets.get(ticketId)
+      if (target !== undefined && trigger.meta.newTicket === true && !liveTicket(target)) {
+        throw new UserError('freshRequestEndedTicket')
+      }
       this.evals.withdraw(trigger)
       this.tickets.attach(ticketId, trigger, note)
       this.evals.routed(triggerId, ticketId)

@@ -3,38 +3,84 @@ import { useState } from 'react'
 import { ADMISSION_DEFAULTS, ADMISSION_OPTIONS, type Admission, type AdmissionCell } from '../admission.ts'
 import type { AdmissionRowView } from '../sources/kind.ts'
 import { LIMITS } from '../limits.ts'
-import { DECISION_FILTERS, DECISION_KINDS, usePoll, type DecisionFilter, type Settings, type SourceView } from './api.ts'
-import { Button, DisclosureRow, Icon, InfoTip, Input, Pill, SegmentedControl, Switch } from './controls.tsx'
+import { DECISION_FILTERS, DECISION_KINDS, usePoll, type DecisionFilter, type DecisionRow, type Settings, type SourceView } from './api.ts'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill, SegmentedControl, SegmentedTabs, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { useAction, usePanel } from './provider.tsx'
+import { settingsRoute } from './route.ts'
 import { DecisionLine } from './rows.tsx'
+import { decisionMark } from './marks.ts'
 import { ConfigHistory, Field, Fields, ModelField, SourceField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { localized, valueLabel, when } from './text.ts'
-import { Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
+import { errorText, localized, valueLabel, when } from './text.ts'
+import { Card, Empty, Hint, LabelValue, ListSection, LoopTrack, PageHead, Section, Toolbar } from './widgets.tsx'
+
+/**
+ * 决策闭环样例：用列表里最新的一条决策还原「触发 → 规则 → 结论 → 工单 → 回流」。
+ * 每个状态的取值都来自这条决策自身（triggerIds、rules.matched、outcome、ticketId、strength），
+ * 不做跨记录聚合，也不写死计数；能点进对应页面的步骤才挂 onSelect。
+ */
+function DecisionLoop({ decision }: { decision: DecisionRow }) {
+  const { t, navigate } = usePanel()
+  const mark = decisionMark(t, decision.outcome)
+  const hits = decision.rules.filter(rule => rule.matched).length
+  const total = decision.rules.length
+  return <Card title={t('decisionLoop')} hint={t('loopHint')}>
+    <LoopTrack label={t('loopTitle')} steps={[
+      // 触发：这条决策由几条触发引起；0 条说明触发还没到达，闭环未开始。
+      { label: t('flowTriggeredLabel'), value: decision.triggerIds.length, state: decision.triggerIds.length ? 'done' : 'pending' },
+      // 规则：命中数 / 参与判定的规则数，全部未命中时这一步仍是未完成。
+      { label: t('rules'), value: hits + '/' + total, state: total > 0 && hits > 0 ? 'done' : 'pending',
+        onSelect: () => navigate(settingsRoute('eval')) },
+      // 结论：这条决策真实产生的结论文案，闭环的当前位置。
+      { label: t('flowDecidedLabel'), value: mark.label, state: 'current' },
+      // 工单：有 ticketId 才表示决策已落到具体工单，可点进工单详情。
+      { label: t('flowTickedLabel'), value: decision.ticketId ? decision.ticketTitle ?? t('loopDone') : t('loopPending'),
+        state: decision.ticketId ? 'done' : 'pending',
+        ...decision.ticketId ? { onSelect: () => navigate({ page: 'execution', id: decision.ticketId! }) } : {} },
+      // 回流：结论写入决策日志并回到策略侧，依据强度说明这次判定的来源。
+      { label: t('flowReturnedLabel'), value: valueLabel(t, 'strength', decision.strength), state: 'done',
+        onSelect: () => navigate(settingsRoute('eval')) },
+    ]} />
+  </Card>
+}
 
 export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter; window: '24h' | undefined; paused: boolean }) {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(30)
-  const { data, error } = usePoll(() => call('GET decisions', { query: { limit, kind: DECISION_KINDS[filter],
+  const { data, error, reload } = usePoll(() => call('GET decisions', { query: { limit, kind: DECISION_KINDS[filter],
     ...window ? { window } : {} } }), [filter, limit, window])
   const show = (key: DecisionFilter, last24h: boolean) => navigate({ page: 'eval', query: { ...key === 'work' ? {} : { filter: key },
     ...last24h ? { window: '24h' } : {} } }, true)
   return <>
-    <StatusHead hint={t('evalStatusIntro')} settings="eval" />
+    {/* 列表页模板（v2）：页面头（标题 + 说明 + 设置入口）→ 筛选条（Toolbar）→ 列表（ListSection 管四态）。 */}
+    <PageHead back={false} title={t('term.decision')} hint={t('evalStatusIntro')}>
+      <Button variant="ghost" size="sm" icon={<Icon name="settings" />}
+        onClick={() => navigate(settingsRoute('eval'))}>{t('tab.settings')}</Button>
+    </PageHead>
     {paused && <p className="dt-banner">
       {t('evalRecordsPaused')} <button type="button" className="dt-textlink"
         onClick={() => navigate({ page: 'execution' })}>{t('resumeWhere')}</button>
     </p>}
-    <div className="dt-filters">
-      {DECISION_FILTERS.map(key => <Pill key={key} active={filter === key} onClick={() => { setLimit(30); show(key, !!window) }}>
-        {t(`decisionFilter.${key}`)}
-      </Pill>)}
-      {window && <><span className="dt-filter-gap" /><Pill active onClick={() => show(filter, false)}>{t('lastDayOnly')}</Pill></>}
-    </div>
-    <LoadState error={error} loading={!data} />
-    {data && (data.items.length ? <ul className="dt-list">{data.items.map(decision => <DecisionLine key={decision.id}
-      decision={decision} />)}</ul> : <Hint>{t('none')}</Hint>)}
-    {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 30)} />}
+    {/* 闭环卡只在拿到至少一条决策时渲染：没有数据就没有可展示的闭环样例。 */}
+    {data && data.items.length > 0 && <DecisionLoop decision={data.items[0]!} />}
+    {/*
+      四态统一交给 ListSection：首次加载的骨架出现在筛选条之前，筛选条只在拿到数据后渲染，
+      避免加载途中先闪一排筛选项；空列表仍保留筛选条，用户可以立刻换一个过滤条件。
+    */}
+    <ListSection loading={!data} error={error ? errorText(error) : undefined} onRetry={() => { void reload() }}
+      more={data?.next_offset != null} onMore={() => setLimit(limit + 30)}>
+      {/* v2 筛选条：pills 在左，可移除的「过去 24 小时」条件仍在同一行内。 */}
+      <Toolbar>
+        {DECISION_FILTERS.map(key => <Pill key={key} active={filter === key} onClick={() => { setLimit(30); show(key, !!window) }}>
+          {t(`decisionFilter.${key}`)}
+        </Pill>)}
+        {window && <><span className="dt-filter-gap" />
+          {/* 24 小时窗口是可移除的过滤条件，用普通按钮表达「点掉它」；Pill 的 aria-pressed 只表示选中，表达不了移除。 */}
+          <Button variant="outline" size="sm" onClick={() => show(filter, false)}>{t('lastDayOnly')}</Button></>}
+      </Toolbar>
+      {data && (data.items.length ? <ul className="dt-list">{data.items.map(decision => <DecisionLine key={decision.id}
+        decision={decision} />)}</ul> : <Empty icon="inbox" title={t('emptyList')} hint={t('emptyListHint')} />)}
+    </ListSection>
   </>
 }
 
@@ -108,7 +154,7 @@ function AdmissionTable({ rows, labels, table, explicit, onChange }: {
     const value = table[row.id]?.[cell] ?? ADMISSION_DEFAULTS[cell]
     // Reserve a fixed-width slot for the warning icon so selecting a value never shifts column widths.
     return <td key={cell}><span className="dt-admission-cell">
-      <select className="dt-select" aria-label={`${name(row)} · ${t(`admissionCell.${cell}`)}`} value={value} onChange={event => set(row.id,
+      <select className="dt-select" aria-label={name(row) + ' · ' + t(`admissionCell.${cell}`)} value={value} onChange={event => set(row.id,
         cell, event.target.value as Admission)}>
         {ADMISSION_OPTIONS[cell].map(option => <option key={option} value={option}>{t(`admissionValue.${option}`)}</option>)}
       </select>
@@ -167,18 +213,18 @@ function PolicyBlock() {
           expanded={expanded.has(rule.id)}
           onToggle={() => toggle(rule.id)} onChange={next => edit({ rules: policy.rules.map((item, position) => position === index ? next
             : item) })}
-          onDuplicate={() => insert({ ...rule, id: crypto.randomUUID(), name: `${rule.name}${t('copySuffix')}`.slice(0, LIMITS.ruleName) },
+          onDuplicate={() => insert({ ...rule, id: crypto.randomUUID(), name: (rule.name + t('copySuffix')).slice(0, LIMITS.ruleName) },
             index + 1)}
           onRemove={() => edit({ rules: policy.rules.filter((_, position) => position !== index) })} />)}</ul>
             : <Hint>{t('rulesEmpty')}</Hint>}
       </Section>
       {current && <Section title={t('policyPerSource')} hint={t('policyPerSourceHint')}>
-        {parts.length > 1 && <div className="dt-subtabs" role="tablist" aria-label={t('policyPerSource')}>
-          {parts.map(source => <button key={source.id} type="button" role="tab" aria-selected={source === current} className="dt-subtab"
-            onClick={() => setTab(source.id)}>
-            {localized(t, source.title)}
-          </button>)}
-        </div>}
+        {/* 手写 .dt-subtabs 没有漫游 tabIndex、方向键与 aria-controls；SegmentedTabs 自带 walk()，键盘行为与页面标签一致。
+            variant="subtabs" 让页内分区保持下划线样式，与左侧栏的药丸标签区分开。 */}
+        {parts.length > 1 && <SegmentedTabs variant="subtabs" label={t('policyPerSource')} value={current.id}
+          onChange={id => setTab(id)}
+          items={parts.map(source => ({ value: source.id, label: localized(t, source.title), id: 'policy-' + source.id,
+            panelId: 'dt-page' }))} />}
         <SourcePart key={current.id} source={current} part={part(current.id)}
           saved={(blocks.policy.value.sources[current.id] ?? {}) as Part} dirty={draft.dirty}
           reload={reload} onChange={next => edit({ sources: { ...policy.sources,

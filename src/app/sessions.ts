@@ -171,7 +171,20 @@ export class Sessions {
     accepted?: () => void): Promise<void> {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
+    // 宿主重启后会话是被「恢复」出来的：agent/created 未必再触发，工具也就不会重新注册，
+    // 模型只能凭记忆调 orchestrator_route，DSH 会回 `unknown tool`。投递前补一次装饰，缺什么补什么。
+    await this.heal(result.agent)
     await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted)
+  }
+
+  /** Re-decorates a Session that lost its binding (restored across a restart, or a decoration that failed). No-op otherwise. */
+  private async heal(agent: Agent): Promise<void> {
+    if (this.bindings.has(agent)) return
+    if (!this.host.isMaster(agent.id) && this.ticketOf(agent) === undefined) return
+    try { await this.decorate(agent) }
+    catch (error: unknown) {
+      this.ctx.logger.warn('dsh-superagent could not register its tools on %s: %s', agent.id, String(error))
+    }
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
   promptedId(requestId: string): MessageId { return messageId(key(requestId)) }
@@ -190,6 +203,7 @@ export class Sessions {
   private async inject(name: string, value: Record<string, unknown>, summary: string, sessionId?: string): Promise<void> {
     const resolved = await this.ctx.sessionController.resolveAgent((sessionId ?? this.host.masterId) as SessionId)
     if ('error' in resolved) return
+    await this.heal(resolved.agent)
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
     const text = JSON.stringify(value)
     await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime)
@@ -215,7 +229,12 @@ export class Sessions {
   /** Returns a tool registrar for `agent` that renders tool output as JSON text and attaches `output.image` as an image when present. */
   private registerTool(agent: Agent, binding: SessionBinding): RegisterTool {
     return (name, description, schema, execute) => {
-      binding.disposers.push(agent.ctx.tools.register({ name, description, parameters: z.toJSONSchema(schema),
+      // z.toJSONSchema 会在结果上挂一个不可枚举的 `~standard` 字段（Zod 自带的注册表标记）。
+      // DSH 只接受「无损 JSON」的参数表：不可枚举键会让它的快照返回 undefined，注册时报
+      // `tool "<name>" parameters must be lossless JSON before schema projection`，
+      // 于是整轮模型请求失败。走一趟 JSON 往返把不可枚举字段丢掉，再做结构冻结。
+      const parameters = JSON.parse(JSON.stringify(z.toJSONSchema(schema))) as Record<string, unknown>
+      binding.disposers.push(agent.ctx.tools.register({ name, description, parameters,
         output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => {
           const text = { type: 'text' as const, text: JSON.stringify(value) }
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
@@ -241,6 +260,15 @@ export class Sessions {
   }
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
+    try { await this.decorateOnce(agent) }
+    catch (error) {
+      // 装饰中途失败（比如 skills 服务还没起来）不能在表里留半成品：留着的话下一条消息进来时
+      // `bindings.has(agent)` 为真，这条会话就永远拿不到路由工具了。
+      this.bindings.delete(agent)
+      throw error
+    }
+  }
+  private async decorateOnce(agent: Agent): Promise<void> {
     const host = this.host
     const master = host.isMaster(agent.id)
     const ticket = master ? undefined : this.ticketOf(agent)

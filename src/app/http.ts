@@ -1,7 +1,11 @@
 /** Loopback-only management HTTP routes with same-origin enforcement for the web panel. */
 import type { Context } from '@deepseek-ai/cordis'
+import { isLoopbackHost } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { createHash, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { THREAD_FILTERS, TICKET_FILTERS, type Api, type ApiResponse, type RouteParams } from './api.ts'
 import { sourceSkills } from './context.ts'
@@ -11,6 +15,7 @@ import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, b
 import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
+import { adoptForeignFile } from '../infra/environment.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
@@ -50,13 +55,19 @@ export interface HttpHost {
   /** Resolved deployment; throws if read while waiting for setup (`!configured()`). */
   readonly deployment: Deployment
   readonly setupProblem?: SetupProblem | undefined
-  readonly feishuProblem?: SetupProblem | undefined
+  /** Setup problems that pause one Source, keyed by its setup place (the Source kind ID). */
+  readonly sourceProblems?: Record<string, SetupProblem> | undefined
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
+  /**
+   * 写请求的凭据校验；省略时用 {@link pageCredential} 向宿主页面入口核对。
+   * 单独暴露出来是为了测试能直接给定结论，而不必真的监听端口。
+   */
+  readonly hostAuth?: (req: Pick<IncomingMessage, 'headers'>) => Promise<boolean>
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -76,13 +87,81 @@ async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
 }
+/** 转发给宿主页面入口的凭据头：谁决定这次请求是哪个人，就转发谁，别的一概不带。 */
+const CREDENTIAL_HEADERS = ['cookie', 'authorization']
+const CREDENTIAL_TTL = 60_000
+/** 凭据头的指纹；同一个浏览器的请求打一次探针就够了。 */
+const credentialKey = (headers: IncomingMessage['headers']): string =>
+  createHash('sha256').update(JSON.stringify(Object.entries(headers)
+    .filter(([name, value]) => typeof value === 'string' && (CREDENTIAL_HEADERS.includes(name) || name.startsWith('x-dsh-')))
+    .sort())).digest('hex')
+/**
+ * 判断一次写请求是否带着宿主网页自己的凭据。
+ *
+ * 为什么需要它：`x-orchestrator-request` 只是一个标记头，本机任何进程都能写；
+ * 真正把人挡在外面的是宿主的 Web 服务——未认证的页面请求会得到 401
+ * "dsh web authentication required"。插件不能把这条边界当成理所当然，
+ * 所以把同一个请求的凭据头原样转发给宿主的页面入口，只信宿主的回答：
+ *
+ * - 宿主明确回答 401/403：拒绝这次写操作；
+ * - 宿主其它回答（页面正常、入口不存在、宿主没开认证层）：放行，行为与加固前一致；
+ * - 探针自身失败（宿主重启中、只监听 TLS）：同样放行，宁可少拦一次，也不把面板锁在门外。
+ *
+ * 结论按凭据指纹缓存 {@link CREDENTIAL_TTL} 毫秒，写操作本来就不频繁。
+ */
+/**
+ * 请求到达时用的主机名。宿主的登录 cookie 归 Host 所有：用 localhost 登录，127.0.0.1 就不算登录，
+ * 所以探测凭据必须用同一个名字，不能写死回环地址。
+ */
+const requestHost = (headers: IncomingMessage['headers']): string | undefined => {
+  const host = headers.host
+  if (!host) return undefined
+  // IPv6 字面量形如 [::1]:3097，方括号要留在 URL 里。
+  if (host.startsWith('[')) return host.slice(0, host.indexOf(']') + 1) || undefined
+  return host.split(':')[0] || undefined
+}
+export function pageCredential(port: number, host?: string): (req: Pick<IncomingMessage, 'headers'>) => Promise<boolean> {
+  const decided = new Map<string, { allowed: boolean; at: number }>()
+  return async req => {
+    const key = credentialKey(req.headers)
+    const hit = decided.get(key)
+    if (hit && Date.now() - hit.at < CREDENTIAL_TTL) return hit.allowed
+    const forwarded: Record<string, string> = {}
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string' && (CREDENTIAL_HEADERS.includes(name) || name.startsWith('x-dsh-'))) forwarded[name] = value
+    }
+    // 先问请求自己的主机名（浏览器从哪个名字登录，cookie 就属于哪个名字），再退到另一个回环名字：
+    // 同一个浏览器也可能在 localhost 登录、却从 127.0.0.1 打开页面，两个名字都得问一遍。
+    const targets = [host ?? requestHost(req.headers) ?? '127.0.0.1']
+    for (const name of ['127.0.0.1', 'localhost']) if (!targets.includes(name)) targets.push(name)
+    let allowed = true
+    for (const target of targets) {
+      try {
+        const response = await fetch(`http://${target}:${port}/`, { headers: forwarded, redirect: 'manual',
+          signal: AbortSignal.timeout(1500) })
+        // 宿主明确回答 401/403 才算拒绝；200、入口 404、宿主没开认证层都按放行处理。
+        allowed = response.status !== 401 && response.status !== 403
+      } catch {
+        // 探针失败不拦人；理由见上。
+        allowed = true
+      }
+      if (allowed) break
+    }
+    if (decided.size > 256) decided.clear()
+    decided.set(key, { allowed, at: Date.now() })
+    return allowed
+  }
+}
 export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
   const host = req.headers.host
   if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return false
   return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
 }
-/** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
-function failure(error: unknown): [number, Record<string, unknown>] {
+/**
+ * Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language.
+ * `internal` receives anything that becomes a 500, so its original text and stack reach the service log only.
+ */
+function failure(error: unknown, internal: (id: string, error: unknown) => void): [number, Record<string, unknown>] {
   if (error instanceof z.ZodError) {
     const issues = error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message }))
     return [400, { error: `Invalid settings: ${issues.map(issue => issue.path).join(', ')}`, issues }]
@@ -91,18 +170,30 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   if (error instanceof RouteError) return [error.status, { error: error.message }]
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
   if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
-  return [500, { error: error instanceof Error ? error.message : String(error) }]
+  // 500 不回内部错误文本：message 里可能带本地绝对路径、CLI 命令或第三方错误细节，
+  // 而同用户进程、面板脚本都能看到响应体。面板按 code 显示本地化文案，细节只写服务端日志。
+  const id = randomUUID()
+  internal(id, error)
+  return [500, { code: 'internal-error', id }]
 }
 
 function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }: Machine) {
   return { stateDir, promptMaxChars: promptMaxChars.get(), admissionContextMaxPages: admissionContextMaxPages.get(),
     admissionContextTimeoutMs: admissionContextTimeoutMs.get() }
 }
+/** Every setup problem the panel shows: global first, then the ones that pause a single Source, each with that Source's title. */
+function setupProblems(runtime: HttpHost) {
+  const titleOf = (place: string) => runtime.sources.kind(place)?.title
+  return [
+    ...runtime.setupProblem ? [{ ...runtime.setupProblem, scope: 'service' as const, title: titleOf(runtime.setupProblem.place) }] : [],
+    ...Object.values(runtime.sourceProblems ?? {}).map(problem => ({ ...problem, scope: 'source' as const, title: titleOf(problem.place) })),
+  ]
+}
 function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
-    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, problems: setupProblems(runtime),
+    accounts: resolved ? { repositories: resolved.repositories, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -114,7 +205,7 @@ export function stateView(runtime: HttpHost) {
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
+  problem: runtime.setupProblem, sourceProblems: runtime.sourceProblems })
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
@@ -159,7 +250,7 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
-      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
+      executorLoad(store, runtime.executor.activeCount()), setupProblems(runtime), sourcesStatus(views(runtime), runtime.health, setupState(runtime))),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     // 取某个工作区的主子：★ 按钮点一次就拿到这一条（服务端没有就现建，建过就复用同一条）。
@@ -213,6 +304,18 @@ function routes(runtime: HttpHost): Routes {
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
+    'POST setup/adopt': async ({ body }) => {
+      // 别的工具写进状态目录的文件（典型是宿主里的 `git config --global` 落到我们指向的 worker 配置）会让部署检查一直失败。
+      // 只允许动我们自己那几个位置的文件：改名留档，再重新检查。
+      const { file } = z.object({ file: z.string().min(1) }).parse(await body())
+      // 只允许动我们自己那几个位置的文件；别的一律 refuse（400），不要把任意路径交给调用方。
+      await adoptForeignFile(runtime.machine.stateDir, file).catch((error: unknown) => {
+        throw error instanceof Error && error.message.startsWith('Only the worker files')
+          ? new UserError('foreignWorkerFile') : error
+      })
+      runtime.checkSetup()
+      return { restarting: true as const }
+    },
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
@@ -220,6 +323,15 @@ function routes(runtime: HttpHost): Routes {
       return savePrompts(runtime, request.config, request.baseRevision, 'panel')
     },
     'POST prompts/preview': async input => runtime.prompts.preview(await promptBody(input)),
+    /** 侧栏结构样本：客户端每页回传一次，落到 stateDir，排查「按钮插错位置」时直接看真 DOM。 */
+    'POST sidebar-dom': async ({ body }) => {
+      const sample = z.object({ html: z.string().max(200_000), strategy: z.string().max(200) }).parse(await body())
+      const directory = join(runtime.machine.stateDir, 'diagnostics')
+      await mkdir(directory, { recursive: true })
+      const path = join(directory, 'sidebar-dom.html')
+      await writeFile(path, `<!-- strategy: ${sample.strategy} -->\n${sample.html}\n`, 'utf8')
+      return { saved: true, path }
+    },
   }
 }
 function decoded(segment: string): string {
@@ -238,20 +350,36 @@ function match(table: Routes, method: string, segments: string[]) {
   return undefined
 }
 export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
-  if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
+  // 只要求"本机可达"，不要求字面写成 127.0.0.1：DSH 桌面端（Electron）把自己的 host
+  // 归一化成 localhost 之类的写法，硬等于会让整个 initialize 在第一步就抛错，
+  // 编排器停在半初始化——数据库开着、会话没建、HTTP 路由也不注册。
+  const host = ctx.webServer.host
+  const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]' || isLoopbackHost(host)
+  if (!loopback) throw new Error(`Orchestrator management requires a loopback Web server; configured host is "${host}"`)
+  // 写操作还要过宿主页面凭据这一关：标记头谁都能伪造，宿主的登录态不能。
+  // 读操作维持原样，避免探针一旦失真就让整块面板变成空白。
+  const credential = runtime.hostAuth ?? pageCredential(ctx.webServer.port)
+  /** 任何 500 的细节只进日志：响应里留一个 id，事后能按它反查。 */
+  const internal = (id: string, error: unknown) => ctx.logger.error('orchestrator api: internal error %s: %s', id,
+    error instanceof Error ? error.stack ?? error.message : String(error))
   const table = routes(runtime)
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
       if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
+      const method = req.method ?? 'GET'
+      // 注入的 hostAuth 万一抛错也按放行处理：拦人的开关坏了，不该顺手把管理 API 一起关掉。
+      if (method !== 'GET' && method !== 'HEAD' && !await credential(req).catch(() => true)) {
+        json(res, 403, { code: 'credential-required' }); return
+      }
       try {
         await runtime.ready
-        const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
+        const route = match(table, method, url.pathname.slice('/orchestrator/api/'.length).split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')
         const query = Object.fromEntries(url.searchParams)
         json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))
-      } catch (error) { json(res, ...failure(error)) }
+      } catch (error) { json(res, ...failure(error, internal)) }
     } })]
   return () => { for (const dispose of disposers) dispose() }
 }

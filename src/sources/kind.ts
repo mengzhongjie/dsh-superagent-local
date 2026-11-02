@@ -3,6 +3,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { z } from 'zod'
 import type { OutboundMessage, ScopeResult, Trigger } from '../core/index.ts'
 import type { Deployment } from '../deployment.ts'
+import type { Settings } from '../policy.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SourceContext, SourceHost } from './host.ts'
 
@@ -39,9 +40,13 @@ export interface SourcePolicyPart<P extends Record<string, unknown>> {
   /** Optional external roster sync (such as chat members); `ready` reports whether `part` names a target to refresh from. */
   sync?: { label: Localized; ready(part: P): boolean; run(host: SourceHost, part: P, signal: AbortSignal): Promise<P> }
 }
-/** UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available. */
-export interface ChannelLink { url: string; label: Localized; triggerId?: string }
-export type ChannelLinks = Partial<Pick<Deployment, 'repository' | 'feishu'>>
+/**
+ * UI link for a channel address; `triggerId` names the Trigger whose own deep link is preferred when available,
+ * and `icon` is the panel icon of this kind of link (`pull` for a code-hosting review, `message` for a chat).
+ * 扩展点：图标由来源自己的 channel.link() 给出，前端不需要按来源 id 分支。
+ */
+export interface ChannelLink { url: string; label: Localized; triggerId?: string; icon?: 'pull' | 'message' }
+export type ChannelLinks = Partial<Pick<Deployment, 'repositories' | 'feishu'>>
 /** Outbound messaging adapter for a source kind's threads. */
 export interface SourceChannel<C> {
   /** Whether a reply may still go to `address`; without it, every address may receive replies. */
@@ -81,6 +86,18 @@ export interface TriggerContext {
   image(agent: Agent, commands: Commands, message: { id: string; text: string }, key: string, stateDir: string,
     signal: AbortSignal): Promise<unknown>
 }
+/**
+ * Panel label and lifecycle meaning of one health code a kind reports.
+ *
+ * `mode` decides what the panel shows while the Source is enabled: `pending` keeps showing 启动中 until the code
+ * clears (transient, such as waiting for the deployment check), `steady` keeps the reported state (an intentional
+ * stop, such as local-workspace mode). Omitting `mode` means `pending` for `sourceOff` and `steady` otherwise,
+ * which is the core behaviour before kinds declared their codes.
+ */
+export interface HealthCodeSpec {
+  label: Localized
+  mode?: 'pending' | 'steady'
+}
 /** Pluggable source kind descriptor registered with SourceRegistry. */
 export interface SourceKind<C extends Record<string, unknown> = Record<string, unknown>> {
   /** Stable ID; a default instance with the same ID exists when none is stored. */
@@ -94,6 +111,17 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   fields: FieldSpec[]
   /** Health entry names owned by this kind under `health[...]`; no other kind or core loop may report them. */
   health: string[]
+  /**
+   * Panel labels and lifecycle meaning for the `Health.code` values this kind reports; codes it omits fall back to
+   * the panel's own table. 新增一个健康码只需要这里加一行，前端不用改。
+   */
+  healthCodes?: Record<string, HealthCodeSpec>
+  /**
+   * Configuration keys whose change must re-run setup (an account CLI, for example) and that the settings panel marks
+   * as restarting. 新增一个来源只在自己的 kind 里声明，不必改 core 的表。
+   */
+  setupFields?: readonly string[]
+
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
   scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
   /** Outbound reply adapter; kinds without `channel` produce no replies or channel checks. */
@@ -101,7 +129,8 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */
   threadContext?: ThreadContext<C>
   /** Maps a search query to candidate Thread keys (such as `github:12`) and Trigger search terms (such as a Feishu `om_` ID). */
-  find?(query: string): { threads: string[]; terms: string[] }
+  /** Maps a search query to the Threads and search terms it names; `settings` tells a kind which scopes it watches (for GitHub, the configured repositories). */
+  find?(query: string, settings: Settings): { threads: string[]; terms: string[] }
   /** Returns the ID of the Trigger whose message this Trigger replies to, when derivable without a network read. */
   repliesTo?(trigger: Trigger): string | undefined
   /** Policy section for kinds whose senders have their own identity. */

@@ -7,8 +7,8 @@ import { changedSections, isPart, isSkill, lineDiff, partKey, partText, partWith
   withOverrides, withSection, withoutSkill, type BuiltInPart, type DiffLine } from './prompt-config.ts'
 import { useAction, usePanel } from './provider.tsx'
 import { errorText, valueLabel, when, type T } from './text.ts'
-import { Hint, LoadState } from './widgets.tsx'
-import { Button, Icon, Input, SegmentedControl } from './controls.tsx'
+import { Card, Hint, LoadMore, LoadState } from './widgets.tsx'
+import { Button, Icon, Input, SegmentedControl, SegmentedTabs } from './controls.tsx'
 
 type Tab = 'edit' | 'full' | 'history'
 type Origin = { revision: number } | 'defaults' | { reset: string }
@@ -55,8 +55,10 @@ function PromptsEditor({ view, reload }: { view: PromptsView; reload: () => Prom
     { value: 'history' as const, label: t('promptViewHistory') }]
   const removed = view.defaultChanged.filter(item => item.removed).map(item => item.part)
   return <div className="dt-form">
-    <div className="dt-subtabs" role="tablist" aria-label={t('promptViews')}>{tabs.map(item => <button key={item.value} type="button"
-      role="tab" className="dt-subtab" aria-selected={tab === item.value} onClick={() => setTab(item.value)}>{item.label}</button>)}</div>
+    {/* 手写 .dt-subtabs 没有漫游 tabIndex、方向键与 aria-controls，键盘用户进不了第二个标签；
+        SegmentedTabs 自带 walk() 与 role=tab 关联，和页面级标签同一套交互。 */}
+    <SegmentedTabs variant="subtabs" label={t('promptViews')} value={tab} onChange={setTab}
+      items={tabs.map(item => ({ value: item.value, label: item.label, id: 'prompt-' + item.value, panelId: 'dt-page' }))} />
     {removed.length > 0 && <Hint>{t('promptRemovedParts', { parts: removed.join(t('listSeparator')) })}</Hint>}
     {tab === 'edit' && <PromptSections config={config} view={view} changed={changed} selected={selected} onSelect={select} onEdit={edit} />}
     {tab === 'full' && <FullPrompt config={config} view={view} dirty={draft.dirty} revision={draft.revision} onEdit={open} />}
@@ -107,8 +109,11 @@ function PromptSections({ config, view, changed, selected, onSelect, onEdit }: {
         <Button variant="ghost" size="sm" type="submit" icon={<Icon name="plus" />}>{t('promptAddSkillAction')}</Button>
       </form>
     </nav>
-    {part ? <BuiltInEditor config={config} view={view} part={part} onEdit={onEdit} />
-      : <TeamEditor config={config} view={view} selected={selected} onSelect={onSelect} onEdit={onEdit} />}
+    {/* v2：编辑区整体落在一张 Card 里；左侧 .dt-prompt-nav 是页内二级导航，不抢一级导航语义。 */}
+    <Card className="dt-prompt-card">
+      {part ? <BuiltInEditor config={config} view={view} part={part} onEdit={onEdit} />
+        : <TeamEditor config={config} view={view} selected={selected} onSelect={onSelect} onEdit={onEdit} />}
+    </Card>
   </div>
 }
 /** Whether an override was edited from a built-in text that has changed since. */
@@ -281,8 +286,7 @@ function PromptHistory({ view, from, onLoad }: {
         onClick={() => { void load.run(version.revision) }}>{t('promptRestore')}</Button></div>
     </li>)}</ul>
     <div className="dt-actions">
-      {next !== null && <Button variant="outline" size="sm" icon={<Icon name="chevron-down" />} disabled={more.busy}
-        onClick={() => { void more.run(next) }}>{t('promptOlder')}</Button>}
+      {next !== null && <LoadMore onMore={() => { void more.run(next) }} />}
       <Button variant="outline" size="sm" icon={<Icon name="refresh" />}
         onClick={() => onLoad(view.defaults, 'defaults')}>{t('promptDefaults')}</Button>
     </div>

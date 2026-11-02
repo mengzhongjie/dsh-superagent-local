@@ -2,6 +2,16 @@
 
 Use this guide to install, configure and operate dsh-superagent. It covers accounts, startup checks, upgrades and troubleshooting, building on [001 Domain model](001-domain.md) through [005 Panel](005-panel.md).
 
+## The worker environment
+
+Workers run shell commands in the same process tree as the host, and DSH has no per-session environment hook, so
+`applyEnvironment` sets the worker variables on `process.env`: `GIT_CONFIG_GLOBAL` points at the worker gitconfig,
+credential-shaped variables are cleared, and the CLI shims go in front of `PATH`. Other sessions in the same host see
+those variables too while dsh-superagent is running.
+
+The operator's own values are written to `<stateDir>/environment-origin.json` before the first override and restored
+when the plugin stops, so a hot restart never turns the injected values into the "original" ones.
+
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
@@ -160,7 +170,11 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.
 
-Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403.
+Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403. A route that fails inside the service answers `500` with `{"code": "internal-error", "id": "…"}`; the message and stack go to the service log under that id, never to the caller.
+
+Requests that write (`PUT`, `POST`, `DELETE`) also need the host Web server's page credential. dsh-superagent forwards the request's `cookie`, `authorization` and `x-dsh-*` headers to the host's page entry and refuses the write only when the host answers 401 or 403; a normal page, a missing entry, a host without an authentication layer, or an unreachable host all let the write through, so a restarting host never locks the panel out. Reads stay open.
+
+This is not a same-origin boundary, and the headers above must not be described as one. `x-orchestrator-request` is a marker any local process can write, and the credential check only relays what the host decides. So a local process that can reach the port *and* hold the host's page credential can call these routes with the panel's permissions; a local process without that credential can still read the `GET` routes but cannot write. Keep the Web server on the loopback address — `registerHttp` refuses to mount on any other host — and keep the host's own authentication on: that, not these headers, is what keeps other people out.
 
 API saves have the panel's permissions. They can change execution environment and setup account fields, unlike saves made through the main Session's tools.
 

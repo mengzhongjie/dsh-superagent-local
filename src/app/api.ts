@@ -24,6 +24,11 @@ export interface Api {
   'GET sources': { response: SourceStatusView[] }
   /** 取某个工作区的主子会话；没有就现建一条。 */
   'GET master': { response: { masterId: string } }
+  /**
+   * 侧栏诊断：客户端把工作区组标题行的真实 DOM 结构回传一次。
+   * 侧栏由别的插件渲染，结构会随宿主版本或主题插件变；落样本到 stateDir，出问题直接看行里到底有什么。
+   */
+  'POST sidebar-dom': { body: { html: string; strategy: string }; response: { saved: boolean; path: string } }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
@@ -41,6 +46,8 @@ export interface Api {
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }
   'POST setup/check': { response: { restarting: true } }
+  /** 部署检查卡在「状态目录里有别人的文件」时的自救入口：把该文件改名留档后重新检查。 */
+  'POST setup/adopt': { body: { file: string }; response: { restarting: true } }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, adoptForeignFile, agentVariables, applyEnvironment, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
@@ -22,6 +22,35 @@ const workerEnv = (env: Record<string, string | undefined>): Record<string, stri
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'environment-')); mkdirSync(join(dir, 'real')) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
+
+it('moves a foreign worker file aside on request, and only inside the state directory', async () => {
+  const stateDir = join(dir, 'state')
+  mkdirSync(join(stateDir, 'worker-bin'), { recursive: true })
+  const gitconfig = workerGitConfig(stateDir)
+  writeFileSync(gitconfig, '[safe]\n\tdirectory = *\n')
+  await adoptForeignFile(stateDir, gitconfig)
+  expect(readdirSync(stateDir).some(name => name.startsWith('worker-gitconfig.foreign-'))).toBe(true)
+  expect(() => adoptForeignFile(stateDir, '/etc/passwd')).rejects.toThrow('Only the worker files')
+})
+it("remembers the operator's own environment across a hot restart", () => {
+  const stateDir = join(dir, 'state')
+  const saved = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, PATH: process.env.PATH }
+  try {
+    process.env.GIT_CONFIG_GLOBAL = '/operator/gitconfig'
+    // 第一次注入后进程崩掉/被热重启（没来得及 restore）：注入值留在环境里。
+    applyEnvironment({ GIT_CONFIG_GLOBAL: '/worker/gitconfig' }, stateDir, process.env.PATH ?? '')
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe('/worker/gitconfig')
+    // 恢复时要还原成第一次记下的操作者自己的值，而不是当前这个注入值。
+    process.env.GIT_CONFIG_GLOBAL = '/worker/gitconfig'
+    const second = applyEnvironment({ GIT_CONFIG_GLOBAL: '/worker/gitconfig' }, stateDir, process.env.PATH ?? '')
+    second()
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe('/operator/gitconfig')
+  } finally {
+    if (saved.GIT_CONFIG_GLOBAL === undefined) delete process.env.GIT_CONFIG_GLOBAL
+    else process.env.GIT_CONFIG_GLOBAL = saved.GIT_CONFIG_GLOBAL
+    process.env.PATH = saved.PATH
+  }
+})
 describe('worker shims', () => {
   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
@@ -57,9 +86,11 @@ describe('worker shims', () => {
     symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
     rmSync(join(workerBin(dir), 'link'))
+    // 我们自己的文件名被占用时自动改名留档（证据保留），然后写回我们那份。
     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagent`)
-    expect(readFileSync(workerGitConfig(dir), 'utf8')).toBe('[user]\n\tname = someone\n')
+    await writeEnvironment(testDeployment({ stateDir: dir }), [])
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('# Written by dsh-superagent on every start')
+    expect(readdirSync(dir).some(name => name.startsWith('worker-gitconfig.foreign-'))).toBe(true)
   })
   it('replaces the files it wrote under the project\'s earlier names', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli', 'older-cli'])
@@ -90,7 +121,11 @@ describe('agent git configuration', () => {
     await expect(git('config', 'core.abbrev')).rejects.toThrow()
     expect(env).not.toHaveProperty('GIT_AUTHOR_NAME')
     expect(env).not.toHaveProperty('GIT_COMMITTER_EMAIL')
-    await expect(git('-C', 'repo', 'commit', '--allow-empty', '-q', '-m', 'without identity')).rejects.toMatchObject({ stderr: expect.stringContaining('no email was given') })
+    // 不锁死 git 的英文文案：LC_ALL/LANG 不同机器上会输出中文，只要求「缺身份」这件事被拒绝。
+  const missing = await git('-C', 'repo', 'commit', '--allow-empty', '-q', '-m', 'without identity')
+    .then(() => undefined, (error: { code?: number; stderr?: string }) => error)
+  expect(missing).toMatchObject({ code: 128 })
+  expect(String(missing?.stderr ?? '')).toMatch(/no email was given|user\.email|请提供|邮箱/i)
     await git('-C', 'repo', '-c', 'user.name=Alice', '-c', 'user.email=alice@example.com', 'commit', '--allow-empty', '-q', '-m', 'with identity')
     expect(await git('-C', 'repo', 'log', '-1', '--format=%an <%ae> / %cn <%ce>')).toBe('Alice <alice@example.com> / Alice <alice@example.com>')
   })

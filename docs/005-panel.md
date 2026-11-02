@@ -12,12 +12,11 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, **Execution**, and **Settings**. Until repository and account setup succeeds, Overview shows what is missing and links to the relevant setting.
+The tabs follow the workflow: **Overview**, **Trigger**, **Eval**, **Execution**, and **Settings**. Sources no longer have a tab of their own: Overview shows each Source's state and its last day's counts, and Settings › Source holds their configuration. Until the repositories and the accounts are set up, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
-| Overview | Tickets needing action, system problems, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
-| Source | Source state, setup problems and non-zero counts. Filtered Triggers and dropped messages cover the same 24-hour window as Overview |
+| Overview | Tickets needing action, system problems, one line per Source with its state, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
 | Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
 | Eval | Decisions with their reason and matched rules |
 | Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
@@ -25,7 +24,7 @@ The tabs follow the workflow: **Overview**, **Source**, **Trigger**, **Eval**, *
 
 ### Reading individual records
 
-A dropped message links to its Ticket, or to its Thread when it has no Ticket. The Source page explains whether its conversation disappeared or the Source stopped listening to it.
+A dropped message links to its Ticket, or to its Thread when it has no Ticket. Its reason says whether the conversation disappeared or the Source stopped listening to it, and Settings › Source shows what that Source listens to.
 
 A human follow-up still owned by an Executor is marked **Delivered to Ticket**, without an Eval. The Thread also shows hand-back reasons and context-only Subscriptions. **Evaluate again** can send that follow-up to Eval, or retry a Trigger with no effective judgement: one filtered by its Source, an unavailable Eval, or a delivered message with neither a non-stop Decision nor an Executor acknowledgement.
 
@@ -46,6 +45,10 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 The header search finds Triggers by text, id, Feishu message id or a stored link, such as a GitHub comment URL. A Feishu link missing from the original message becomes searchable only after the host reads it during the current process lifetime.
 
 Search also finds Threads by references such as `#12` or a GitHub URL, and Tickets by title or a matching Thread.
+
+## Adding a Source
+
+A new Source appears throughout the panel without changes here. Register its `SourceKind` in the Source's own plugin and declare, in that module, the configuration `fields`, the `health` entries with their `healthCodes` labels and `mode`, the `setupFields` whose change re-runs setup, and any setup problem it raises through its own `ProblemSpec`. The Source tab, its settings card, the Overview problem row and the restart notice then follow that declaration. The architecture guide (007) has the contract, and `tests/extension-source.spec.ts` is the proof.
 
 ## Principles
 

@@ -1640,3 +1640,20 @@ describe('ignores from the card', () => {
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
   })
 })
+
+it('refuses to attach an operator request to a ticket that has already ended', async () => {
+  // 本地操作者的每条消息都是一个新请求：附着只能写进正在跑的那张工单，
+  // 已经结束的必须走 accept 开新单 —— 否则重发同一个需求会变成旧单的复活重试。
+  const h = harness()
+  const decision = accepted(h)
+  const ticketId = decision.ticketId!
+  h.engine.report(ticketId, { state: 'ready', summary: 'done' })
+  expect(h.repo.tickets.get(ticketId)!.ended).toBeDefined()
+  h.engine.receive(trigger('9', { meta: { newTicket: true } }))
+  expect(() => h.engine.attach(ticketId, '9')).toThrow(UserError)
+  expect(h.repo.tickets.get(ticketId)!.undelivered).toEqual([])
+  // 不是本地操作者的来源（没有 newTicket 标记）仍然可以附着：外部线程的补充消息还是回到原单。
+  // 用 bot 来源，人发的消息会先被 intake 直接折进原单，走不到 attach 这一步。
+  h.engine.receive(trigger('10', { human: false, actor: { source: 'github', id: 'ci' } }))
+  expect(() => h.engine.attach(ticketId, '10')).not.toThrow()
+})

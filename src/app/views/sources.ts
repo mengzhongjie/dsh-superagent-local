@@ -9,13 +9,27 @@ import { dayAgo, snapshot, type ViewHost } from './records.ts'
 import { preview } from './text.ts'
 
 export type HealthMap = Record<string, Health>
-/** Resolves health entries for a Source instance, treating stale `sourceOff` entries on an enabled Source as `starting`. */
+/**
+ * Resolves health entries for a Source instance, attaching the panel label each code was declared with and applying
+ * its lifecycle `mode`:
+ * - `pending` (the default for the core `sourceOff` code): an enabled Source shows 启动中 until the code clears.
+ * - `steady`: the reported state stands, because the code describes an intentional stop (local-workspace mode).
+ *
+ * 扩展点：码表来自 kind 自己（`SourceKind.healthCodes`），所以新增来源不需要改这里。
+ */
 export function sourceHealth(sources: SourceRegistry, instance: SourceInstance, health: HealthMap) {
   const kind = sources.kind(instance.kind)
   const starting: Health = { state: 'starting', detail: '' }
+  const codes = kind?.healthCodes ?? {}
   const parts = (kind?.health ?? []).map(name => {
     const entry = health[name]
-    return { name, ...(!entry || (instance.enabled && entry.code === 'sourceOff') ? starting : entry) }
+    // No report yet: the Source has not run, which a pending start describes correctly.
+    if (!entry) return { name, ...starting }
+    const spec = entry.code === undefined ? undefined : codes[entry.code]
+    const pending = spec ? spec.mode !== 'steady' : entry.code === 'sourceOff'
+    const shown = instance.enabled && pending && entry.state === 'paused' ? starting : entry
+    // 覆盖成「启动中」后原来的码（例如 sourceOff）不再成立，标签也就不该跟着走。
+    return { name, ...shown, ...spec && shown === entry ? { label: spec.label } : {} }
   })
   return { id: instance.id, title: kind?.title ?? { zh: instance.id, en: instance.id }, health: parts }
 }
@@ -24,10 +38,21 @@ export interface SetupState {
   deployment?: Deployment | undefined
   /** Setup failure that stops all Sources. */
   problem?: SetupProblem | undefined
-  /** Feishu bot check failure that pauses only the Feishu Source. */
-  feishuProblem?: SetupProblem | undefined
+  /** Problems that pause one Source only, keyed by that Source's setup place (its kind id). */
+  sourceProblems?: Record<string, SetupProblem> | undefined
 }
-export const problemOf = (id: string, setup: SetupState) => [setup.problem, setup.feishuProblem].find(problem => problem?.place === id)
+/** 概览用的来源摘要：只有标题与状态，不查 24 小时统计——明细属于来源页。 */
+export function sourceSummary(sources: SourceRegistry, health: HealthMap, setup: SetupState) {
+  return sources.instances().map(instance => {
+    const { health: parts, title } = sourceHealth(sources, instance, health)
+    return { id: instance.id, title, installed: instance.installed, enabled: instance.enabled,
+      state: sourceState(instance, parts, setup) }
+  })
+}
+export type SourceSummary = ReturnType<typeof sourceSummary>[number]
+/** The problem that keeps a Source from running: its own place first, then a global failure pointing at it. */
+export const problemOf = (id: string, setup: SetupState): SetupProblem | undefined =>
+  setup.sourceProblems?.[id] ?? (setup.problem?.place === id ? setup.problem : undefined)
 /** Source lifecycle state in priority order: missing kind, disabled, setup/part error, blocked on global setup, starting, paused, or ready. */
 export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready'
 function sourceState(instance: SourceInstance & { installed: boolean }, parts: { state: string }[], setup: SetupState): SourceState {

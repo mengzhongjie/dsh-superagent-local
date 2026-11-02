@@ -1,9 +1,10 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { ACCOUNT_PROBES, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
+import type { SourceRegistry } from '../sources/registry.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 
 export interface SetupHost {
@@ -13,9 +14,16 @@ export interface SetupHost {
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
-export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
+/**
+ * Serializes the setup-sensitive configuration of every installed Source (`SourceKind.setupFields`), so a change to
+ * any of them re-runs setup.
+ *
+ * 扩展点：哪些字段算“要重跑 setup”由来源自己声明，这里不认识任何具体来源。
+ */
+const setupFields = (settings: Settings, sources: SourceRegistry) => JSON.stringify(sources.instances().filter(instance => instance.installed)
+  .map(instance => [instance.id, (sources.kind(instance.kind)?.setupFields ?? []).map(key => settings.sources[instance.id]?.config[key] ?? '')]))
+export const setupChanged = (before: Settings, after: Settings, sources: SourceRegistry): boolean =>
+  setupFields(before, sources) !== setupFields(after, sources)
 
 /**
  * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
@@ -23,8 +31,10 @@ export const setupChanged = (before: Settings, after: Settings): boolean => setu
  */
 export class Setup {
   private resolved?: Deployment
+  /** Setup failure that stops all Sources. */
   problem?: SetupProblem
-  feishuProblem?: SetupProblem
+  /** Setup failures that pause one Source only, keyed by its setup place (the Source kind id). */
+  problems: Record<string, SetupProblem> = {}
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -41,7 +51,7 @@ export class Setup {
     return this.resolved
   }
   configured(): boolean { return this.resolved !== undefined }
-  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`feishuProblem` and rethrowing unexpected errors. */
+  /** Resolve deployment accounts and apply the worker environment, recording `SetupError` failures in `problem`/`problems` and rethrowing unexpected errors. */
   async run(settings: Settings): Promise<boolean> {
     try { this.resolved = await this.resolve(settings); return true }
     catch (error) {
@@ -50,19 +60,25 @@ export class Setup {
       return false
     }
   }
-  /** Trigger a restart to re-run setup, refusing if setup and Feishu are already healthy so running assignments are not interrupted. */
+  /** Trigger a restart to re-run setup, refusing when setup and every Source are already healthy so running assignments are not interrupted. */
   check(): void {
-    if (this.configured() && !this.feishuProblem) throw new UserError('setupComplete')
+    if (this.configured() && Object.keys(this.problems).length === 0) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
   restart(): void { setTimeout(this.host.restart, 0) }
-  /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
+  /**
+   * Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks.
+   * 扩展点：探测函数按 Source kind id 在 `ACCOUNT_PROBES` 里登记，没有登记的来源保存卡片时不做额外检查。
+   */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
-    const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
-      : resolveDeployment(machine, settings.sources.github?.config, this.probe())
-    await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
+    const id = block.slice('source:'.length)
+    const probe = ACCOUNT_PROBES[id]
+    if (!probe) return
+    await probe(machine, settings.sources[id]?.config, this.probe()).catch((error: unknown) => {
+      if (!(error instanceof SetupError) || error.place === id) throw error
+    })
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -79,8 +95,8 @@ export class Setup {
     const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
-      this.feishuProblem = error.problem
-      context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
+      this.problems[error.place] = error.problem
+      context.logger.warn('dsh-superagent leaves the %s Source out: %s', error.place, error.message)
       return undefined
     })
     const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }

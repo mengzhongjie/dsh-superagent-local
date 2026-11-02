@@ -14,7 +14,7 @@ import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
-import { attachmentPath, type DshAttachment } from '../sources/dsh.ts'
+import { attachmentPath, isAttachmentId, type DshAttachment } from '../sources/dsh.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
@@ -55,7 +55,16 @@ export function transient(error: unknown): boolean {
   return PASSING.test(text)
 }
 /** Appends a stable 12-character ticket ID suffix to a validated English worktree name. */
-const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
+/**
+ * 模型偶尔不给 worktree_name（比如 routed/inferred 的接受），空串或形状不合法都不能让工单准备阶段整个失败：
+ * 回退到稳定的 `work` 前缀，真正的名字由委托人后续补上也能继续跑。
+ */
+const fallbackWorktreeName = (name: string): string => {
+  const parsed = WorktreeNameSchema.safeParse(name)
+  return parsed.success ? parsed.data : 'work'
+}
+
+export const ticketWorktreeName = (name: string, id: string): string => `${fallbackWorktreeName(name)}-${id.slice(0, 12)}`
 /** Host dependencies used by `DshExecutor`. */
 export interface ExecutorHost {
   /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
@@ -131,9 +140,11 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
     : note.trim()
   // 操作者的附件：Trigger 里只有附件 id，worker 需要可读路径才打得开，
   // 所以把附件库里的绝对路径一行行写进任务说明，让它在动手前先看附件。
-  const attached = trigger?.source === 'dsh' && Array.isArray(trigger.meta.attachments)
+  // Trigger 会被落库并回放：老记录里的附件 id 未必经过当前校验，这里再过滤一次，
+  // 免得一条脏记录让整张工单在接单阶段就抛错（attachmentPath 对非法 id 是抛错的）。
+  const attached = (trigger?.source === 'dsh' && Array.isArray(trigger.meta.attachments)
     ? trigger.meta.attachments as readonly DshAttachment[]
-    : []
+    : []).filter(attachment => isAttachmentId(attachment.id))
   const listing = attached.map((attachment) => {
     const what = attachment.kind === 'image' ? 'image' : 'file'
     const name = attachment.name ?? attachment.id

@@ -178,8 +178,9 @@ export function threadSummary(view: Snapshot, thread: Thread) {
 export type ThreadSummaryView = ReturnType<typeof threadSummary>
 /** Resolves a channel link, preferring the specific trigger URL when the source link references a trigger. */
 export function channelLink({ store, links }: ViewHost, channel: ChannelRef) {
-  const { url, label, triggerId } = links(channel)
-  return { source: channel.source, url: (triggerId && store.triggers.get(triggerId)?.url) || url, label }
+  const { url, label, triggerId, icon } = links(channel)
+  // 图标由来源的 channel.link() 声明（拉取请求 / 聊天消息），这里只负责透传给面板。
+  return { source: channel.source, url: (triggerId && store.triggers.get(triggerId)?.url) || url, label, ...icon ? { icon } : {} }
 }
 /** Parses stored assessment audit metadata, tolerating fields omitted or shaped differently by older versions. */
 const AuditSchema = z.object({

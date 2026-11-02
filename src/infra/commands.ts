@@ -4,6 +4,7 @@ import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
+import { sameName } from './text.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -54,17 +55,25 @@ function membership(error: unknown): unknown {
 }
 /**
  * Executes gh, lark-cli, and git subprocesses with deployment account credentials, timeouts, and abort signals.
- * Restricts GitHub API calls to the configured repository and translates CLI failures into CliError instances for Sources, MasterAssessor, Outbox, and Settings.
+ * Restricts GitHub API calls to one of the configured repositories and translates CLI failures into CliError instances for Sources, MasterAssessor, Outbox, and Settings.
  */
 export class Commands {
   /**
    * @param resolved - returns the resolved deployment setup, or throws while setup is still pending.
    * @param environment - variables overriding `process.env` for every command (such as isolated git settings).
+   * @param repository - 绑定的仓库；不给时用部署里的第一个仓库。
    */
-  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
+  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal,
+    private readonly repository?: string) {}
   get deployment(): Deployment { return this.resolved() }
-  get repository(): string { return this.deployment.repository }
-  withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+  /** 绑定到部署里的某一个仓库：GitHub API 路径仍然只能落在这个仓库里，越界的路径照旧抛错。 */
+  at(repository: string): Commands {
+    if (!this.deployment.repositories.some(item => sameName(item, repository))) throw new Error(`GitHub calls are restricted to the configured repositories: ${repository}`)
+    return bound(this, { repository })
+  }
+  /** 当前绑定的仓库，没有绑定时是部署里的第一个仓库。 */
+  get scope(): string { return this.repository ?? this.deployment.repositories[0] ?? '' }
+  withSignal(signal?: AbortSignal): Commands { return signal ? bound(this, { repository: this.repository, signal: AbortSignal.any([this.signal, signal]) }) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
@@ -93,8 +102,8 @@ export class Commands {
   }
   private path(path: string): string {
     const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
-    if (outside) throw new Error('GitHub calls are restricted to the configured repository')
-    return path ? `repos/${this.repository}/${path}` : `repos/${this.repository}`
+    if (outside) throw new Error('GitHub calls are restricted to the configured repositories')
+    return path ? `repos/${this.scope}/${path}` : `repos/${this.scope}`
   }
   /**
    * Runs the Feishu bot's `lark-cli` and returns the JSON `data` payload.
@@ -112,4 +121,15 @@ export class Commands {
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }
+}
+
+/**
+ * 造一个继承自 base 的 Commands 视图，只覆盖仓库与信号两项。
+ * 用原型继承而不是新建实例：调用方（以及测试里对 run/api/lark 的打桩）始终落在同一个对象上。
+ */
+function bound(base: Commands, own: { repository?: string; signal?: AbortSignal }): Commands {
+  const scoped = Object.create(base) as Commands
+  Object.defineProperty(scoped, 'repository', { value: own.repository, enumerable: false })
+  if (own.signal) Object.defineProperty(scoped, 'signal', { value: own.signal, enumerable: false })
+  return scoped
 }

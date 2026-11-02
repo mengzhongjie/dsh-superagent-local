@@ -1,4 +1,7 @@
 /** Session tool registration, role-scoped resource reads, and routing/settings tool contracts. */
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TICKET_STATES } from '../src/app/cards.ts'
 import { builtInBase, builtInParts, defaultPrompts } from '../src/app/prompts.ts'
@@ -7,6 +10,8 @@ import { KV } from '../src/kv.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { CliError, Commands } from '../src/infra/commands.ts'
 import { IM_WORDS, NOTE_WORDS } from '../src/infra/text.ts'
+import { repositoryOfWorkspace } from '../src/app/tools/executor.ts'
+import { dshTrigger } from '../src/sources/dsh.ts'
 import { CHAT, feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host
@@ -393,7 +398,7 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   expect(followup).toMatchObject({ tickets_total: 2, delivered_to: [a.id], thread: `feishu:${CHAT}:om_1` })
   expect(String(followup.next_action).length).toBeLessThanOrEqual(100)
   // A message elsewhere that names a pull request reads the tickets that follow it.
-  const thread = { key: 'github:123', ref: { source: 'github', id: '123' }, createdAt: '', subscriptions: [a.id], correlated: [], pending: [], meta: {} }
+  const thread = { key: 'github:acme/widgets#123', ref: { source: 'github', id: 'acme/widgets#123' }, createdAt: '', subscriptions: [a.id], correlated: [], pending: [], meta: {} }
   h.runtime.store.threads.save(thread)
   h.runtime.receive(feishu('4', '@bot 看看 #123 的进展')); await h.runtime.idle()
   expect(relaysOf('candidate').at(-1)).toMatchObject({ related_tickets: [], tickets_total: 0, referenced_tickets: [{ ticket_id: a.id }] })
@@ -464,10 +469,10 @@ it('shows an Executor Session no id it cannot read: no Decision, no other ticket
 
 it('marks the threads a worker follows for context apart from those a Source bound its ticket to', async () => {
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
-  h.runtime.engine.bindThread(ticket.id, { source: 'github', id: '12' }, true)
-  await h.runTool(sessionId, 'orchestrator_thread_follow', { thread: 'github:9', reason: 'The Issue it fixes.' })
+  h.runtime.engine.bindThread(ticket.id, { source: 'github', id: 'acme/widgets#12' }, true)
+  await h.runTool(sessionId, 'orchestrator_thread_follow', { thread: 'github:acme/widgets#9', reason: 'The Issue it fixes.' })
   const { threads } = await read(`ticket/${ticket.id}`) as { threads: { thread: string }[] }
-  expect(threads).toEqual(expect.arrayContaining([{ thread: `feishu:${CHAT}:om_1` }, { thread: 'github:12', bound: true }, { thread: 'github:9', context: true }]))
+  expect(threads).toEqual(expect.arrayContaining([{ thread: `feishu:${CHAT}:om_1` }, { thread: 'github:acme/widgets#12', bound: true }, { thread: 'github:acme/widgets#9', context: true }]))
   expect(threads).toHaveLength(3)
 })
 
@@ -488,4 +493,37 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   const page = await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}` })
   expect(page).toMatchObject({ batch: [{ trigger_id: other, read: `trigger/${other}` }] })
   expect(await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `trigger/${other}` })).toMatchObject({ trigger_id: other })
+})
+
+it('attributes a reported PR to the repository the local workspace is, not to the first watched one', async () => {
+  // 认得出就在监听列表里取它，认不出（remote 指向别的仓库、或根本不是 git 仓库）交给调用方回退。
+  const remote = (url: string) => ({ run: async () => `${url}\n` })
+  expect(await repositoryOfWorkspace(remote('git@github.com:acme/second.git'), ['acme/first', 'acme/second'], '/w/mine'))
+    .toBe('acme/second')
+  expect(await repositoryOfWorkspace(remote('https://github.com/acme/first.git'), ['acme/first', 'acme/second'], '/w/mine'))
+    .toBe('acme/first')
+  expect(await repositoryOfWorkspace(remote('https://github.com/someone/else.git'), ['acme/first'], '/w/mine')).toBe('')
+  expect(await repositoryOfWorkspace({ run: async () => { throw new Error('not a repository') } }, ['acme/first'], '/w/mine')).toBe('')
+  expect(await repositoryOfWorkspace(remote('https://github.com/acme/first.git'), ['acme/first'], '')).toBe('')
+})
+
+it('reads the PR a local Ticket reports from the workspace repository, not from the first watched repository', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'local-workspace-'))
+  const calls: string[] = []
+  vi.mocked(Commands.prototype.run).mockImplementation(async (program: string, args: string[]) => {
+    calls.push([program, ...args].join(' '))
+    return program === 'git' && args.includes('remote') ? 'https://github.com/acme/widgets.git\n' : '{"ok":true,"data":{}}'
+  })
+  // gh 被 fixture 桩掉了，它不经过 run：要在这一层记下读了哪个仓库的 PR。
+  const repository = { default_branch: 'master', permissions: { push: true } }
+  vi.mocked(Commands.prototype.gh).mockImplementation(async (args: string[]) => {
+    calls.push(['gh', ...args].join(' '))
+    return (args[1] === 'user' ? { login: 'agent-bot' } : repository) as never
+  })
+  const trigger = dshTrigger({ messageId: 'm1', sessionId: 'session-1', text: 'PR 已经提了，请核对', at: new Date().toISOString(),
+    workspace })
+  const { sessionId } = await h.acceptedTicket(trigger)
+  // gh 被桩成非 PR 的 JSON，schema 校验必然失败；这里要看的是它到底去哪个仓库读了 PR。
+  await expect(h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done.', pr_number: 7 })).rejects.toThrow()
+  expect(calls.some(call => call.includes('repos/acme/widgets/pulls/7'))).toBe(true)
 })

@@ -13,8 +13,12 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
  * True when Feishu permanently rejects a reply because the target message was recalled, withdrawn, or not found.
  * Only a Feishu response carrying one of these error codes means the target message is gone; timeouts or crashes do not.
  */
-const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
-  || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
+const gone = (error: unknown): boolean => {
+  if (!(error instanceof CliError) || error.code === undefined) return false
+  // 飞书业务码：230011 撤回、230012/230020 消息不存在；CLI 文案中英文都可能出现，两种都要认。
+  if ([230011, 230012, 230020].includes(error.code)) return true
+  return /withdrawn|recalled|not found/i.test(error.message) || /撤回|已删除|不存在/.test(error.message)
+}
 /** Replies in the topic of the target message; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const messageId = message.channel.address.messageId
@@ -30,6 +34,7 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
 }
 /** Fallback chat link on the bot's brand; the message's own deep link on its Trigger is preferred when available. */
 export const feishuLink = (address: Record<string, string>, links: ChannelLinks): ChannelLink => ({
+  icon: 'message' as const,
   url: feishuChatLink(links.feishu?.brand ?? 'feishu', address.chatId ?? ''), label: { zh: '飞书消息', en: 'Feishu message' },
   ...address.messageId ? { triggerId: feishuTriggerId(address.messageId) } : {},
 })

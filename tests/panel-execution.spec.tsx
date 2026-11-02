@@ -8,12 +8,13 @@ import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-s
 
 usePanel()
 it('lists Tickets under Execution by who they wait on, with the Executor state and its pause as an action', async () => {
-  server.tickets.open = [ticketSummary(), ticketSummary({ id: 't2', title: '执行中的工单', threads: [{ key: 'github:7',
+  server.tickets.open = [ticketSummary(), ticketSummary({ id: 't2', title: '执行中的工单', threads: [{ key: 'github:acme/widgets#7',
     source: 'github', title: '#7 x', facts: { number: { value: '#7' }, autoMerge: { label: { zh: '自动合并', en: 'Auto-merge' },
       value: { zh: '已开启', en: 'on' } } } }] })]
   await mount()
   await click(zh['tab.execution'])
-  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
+  // 列表页改用 PageHead：页面标题是真实名目（工单），不再有 StatusHead 的副标题。
+  expect(document.querySelector('.dt-page-title h2')?.textContent).toBe(zh['term.ticket'])
   expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20')).toBe(true)
   expect(text()).toContain(zh.executorRunning)
   expect(all('.dt-chip').map(chip => chip.textContent)).toContain('GitHub#7自动合并已开启')
@@ -25,7 +26,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(text()).toContain(zh['outcome.stopped'])
   expect(all('.dt-status-line .dt-lv').map(item => item.textContent)).toEqual(['执行中 2 / 3', '排队 0'])
   // The pause is its own action: an Execution settings draft started before it still saves.
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
   await type(field<HTMLInputElement>(zh.maxWorkers), '4')
@@ -55,7 +56,8 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
   // Progress is in the Channels and the Session, so the page has no report section.
-  expect(all('.dt-section-title').map(title => title.querySelector('.dt-section-name')?.textContent)).toEqual(['授权详情', '未送达的输入', '订阅的线程'])
+  // 详情页主列改用 Card 分组，标题落在 .dt-card-title 上。
+  expect(all('.dt-card-title').map(title => title.textContent)).toEqual([zh.ticketLoop, '授权详情', '未送达的输入', '订阅的线程'])
   expect(document.querySelector('.dt-status-line .dt-stage')?.textContent).toBe(zh.executingLabel)
   expect(document.querySelector('.dt-status-line .dt-stage .dt-spinner')).not.toBeNull()
   // A Thread this Ticket follows reads as subscribed on its page, though no other Ticket follows it.
@@ -78,14 +80,16 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
 it('reports a missing Ticket instead of rendering an empty page', async () => {
   at({ page: 'execution', id: 'missing' })
   await mount()
-  expect(document.querySelector('.dt-hint')?.textContent).toBe(zh.ticketNotFound)
+  // 缺工单走 Empty 空态：标题是通用 notFound，具体原因在 .dt-empty-hint 里。
+  expect(document.querySelector('.dt-empty-title')?.textContent).toBe(zh.notFound)
+  expect(document.querySelector('.dt-empty-hint')?.textContent).toBe(zh.ticketNotFound)
 })
 
 it('links a question to its Channel, folds consecutive automated messages among Inputs, and shows field explanations in a hover tooltip',
   async () => {
   const ci = (id: string, at: string, failed: number) => ({ id, kind: 'trigger' as const, triggerId: `c${id}`, at, delivered: true,
     trigger: { id: `c${id}`, actor: { source: 'github', id: '' }, human: false,
-      preview: `CI of PR #42 at abc1234: 10 checks, ${failed} failed, 0 running.`, thread: 'github:42' } })
+      preview: `CI of PR #42 at abc1234: 10 checks, ${failed} failed, 0 running.`, thread: 'github:acme/widgets#42' } })
   const t1 = server.ticketDetails.t1!
   server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'answer', attention: { id: 'q1', question: '需要确认按钮颜色' }, inputs: [ci('i3',
     '2026-09-22T00:06:00Z', 1), ci('i2', '2026-09-22T00:05:00Z', 0)] }
@@ -98,7 +102,7 @@ it('links a question to its Channel, folds consecutive automated messages among 
   await click('同一发送者之前还有 1 条自动消息')
   expect(text()).toContain('CI of PR #42 at abc1234: 10 checks, 0 failed, 0 running.')
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(text()).not.toContain('到期后记为未完成')
   const tip = field(zh.evalTimeout).closest('.dt-field')!.querySelector<HTMLElement>('.dt-info')!
   await act(async () => { tip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
@@ -111,7 +115,7 @@ it('links a question to its Channel, folds consecutive automated messages among 
 it('offers a Ticket awaiting review its review place and Session in the page head', async () => {
   const t1 = server.ticketDetails.t1!
   server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'review', threads: [threadSummary(),
-    { ...threadSummary({ key: 'github:42', source: 'github', title: '#42 Fix login' }), url: 'https://github.com/acme/widgets/pull/42' }] }
+    { ...threadSummary({ key: 'github:acme/widgets#42', source: 'github', title: '#42 Fix login' }), url: 'https://github.com/acme/widgets/pull/42' }] }
   at({ page: 'execution', id: 't1' })
   await mount()
   expect(document.querySelector('.dt-status-line .dt-stage')?.textContent).toBe(zh['stage.review'])
@@ -122,7 +126,7 @@ it('offers a Ticket awaiting review its review place and Session in the page hea
 it('keeps what a person types in the Execution settings, converting it once on save', async () => {
   await mount()
   await click(zh['tab.execution'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   const blocked = () => field<HTMLInputElement>(zh.blockedCommands), root = () => field<HTMLInputElement>(zh.executionDirectory),
     workers = () => field<HTMLInputElement>(zh.maxWorkers)
   // A separator typed before the next command, a space inside a path and a cleared number stay as typed.
@@ -177,7 +181,7 @@ it('gives a Ticket a bot\'s message started its basis, marks a Thread it follows
   server.ticketDetails.t1 = { ...t1, mandate: { ...t1.mandate, strength: 'inferred', basis: { via: 'bot', sender: '评审机器人',
     observation: { mode: 'auto' } } },
   basis: { facts: [{ name: 'sender', value: '评审机器人' }, { name: 'bot' }, { name: 'mode', value: 'auto' }], legacy: false },
-  threads: [threadSummary(), { ...threadSummary({ key: 'github:7', title: '#7 相关 Issue' }), context: true }],
+  threads: [threadSummary(), { ...threadSummary({ key: 'github:acme/widgets#7', title: '#7 相关 Issue' }), context: true }],
   inputs: [{ id: 'i1', kind: 'trigger', triggerId: 'e2', at: '2026-09-22T00:03:00Z', delivered: true, trigger: { id: 'e2',
     actor: { source: 'feishu', id: MEMBER, name: { zh: 'Alice', en: 'Alice' } }, human: true, preview: '顺便加一个页面',
     thread: 'feishu:oc_1:om_root', handback: { reason: 'Asks for a new page', at: '2026-09-22T00:05:00Z' } } }] }
@@ -221,4 +225,18 @@ it('sends one stop for a double click on Confirm', async () => {
   const confirm = find(zh.confirm)
   await act(async () => { confirm.click(); confirm.click() })
   expect(server.requests.filter(request => request.path === 'tickets/t1/stop')).toHaveLength(1)
+})
+
+it('places Execution inside the loop, with the running count as the current step', async () => {
+  server.tickets.open = [ticketSummary()]
+  await mount()
+  await click(tab(zh['tab.execution']))
+  // 执行页是闭环里「工作发生」的一环：前后环节都要在，当前步固定是执行，并带真实的运行/排队数。
+  expect(all('.dt-loop-step .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowDecidedLabel,
+    zh.flowTickedLabel, zh.flowRunningLabel, zh.flowEvaluatingLabel, zh.flowReturnedLabel])
+  expect(all('.dt-loop-step[data-state="current"] .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowRunningLabel])
+  expect(document.querySelector('.dt-loop-step .dt-loop-hint')?.textContent).toBe(zh.decisionLoop)
+  // 「评估」这一步通向评估页，「回流策略」通向政策设置的评估分组。
+  await click(all('.dt-loop-link')[3]!)
+  expect(tab(zh['tab.eval']).getAttribute('aria-selected')).toBe('true')
 })

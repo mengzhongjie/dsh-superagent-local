@@ -1,5 +1,5 @@
 /**
- * Migrates a schema 10 database to schema 11 in a single transaction so runtime readers never convert legacy shapes.
+ * Migrates a schema 10 database to schema 12 in a single transaction so runtime readers never convert legacy shapes.
  * Databases older than schema 10 are rejected: this version cannot migrate them.
  */
 import { basename } from 'node:path'
@@ -17,7 +17,7 @@ import type { SettingsVersion, Store } from './store.ts'
 import { Versions } from './versions.ts'
 import { KV, type Key } from '../kv.ts'
 
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 /** The oldest database schema version this build can open and migrate directly. */
 export const OLDEST_SCHEMA = 10
 /** Returns an error message explaining why `version` cannot be opened: older schemas need a new state directory. */
@@ -234,7 +234,10 @@ function withoutRemovedFields(value: Stored): Stored {
     github: { allowed: people.filter(member => member.github).map(member => ({ id: member.github! })) },
   } : undefined
   // The GitHub Source no longer configures a dedicated merge account; auto-merge policy now lives in prompts.
-  const withoutMerge = (id: string, config: unknown) => { if (id !== 'github' || !isObject(config)) return config; const { mergeCli: _mergeCli, ...fields } = config; return fields }
+  const withoutMerge = (id: string, config: unknown) => {
+    if (id !== 'github' || !isObject(config)) return config
+    return migrateGitHubConfig(config)
+  }
   const instances = sources ? Object.fromEntries(Object.entries(sources).map(([id, instance]) => {
     const { authority: _authority, ...fields } = instance
     return [id, 'config' in fields ? { ...fields, config: withoutMerge(id, fields.config) } : fields]
@@ -246,6 +249,12 @@ function withoutRemovedFields(value: Stored): Stored {
     ...(policy ? { policy: { ...policyRest, ...(rules ? { rules } : {}), ...(parts ? { sources: parts } : {}) } } : {}) }
 }
 
+/** The GitHub Source's single legacy `repository` becomes the Repository list (plan A); the removed merge account is dropped. */
+function migrateGitHubConfig(config: Stored): Stored {
+  const { mergeCli: _mergeCli, repository, repositories, ...fields } = config
+  const list = Array.isArray(repositories) ? repositories : []
+  return { ...fields, repositories: list.length ? list : typeof repository === 'string' && repository ? [{ repository }] : [] }
+}
 /** Prompt configuration shape saved before team sections existed, when all sections (including fixed ones) were editable. */
 const LegacyPromptConfigSchema = z.object({ shared: z.string(), orchestrator: z.string(), worker: z.string(), guides: z.record(z.string(), z.string()) })
 /** Guide names from legacy prompt configurations that are now fixed built-in prompt sections or skills. */
@@ -523,7 +532,6 @@ function migrateSourceRecords(store: Store): void {
   feishuDirectAddresses(store)
   feishuThreadLinks(store)
   issueSourceRecords(store)
-  githubCursors(store)
   assessmentTriggers(store)
 }
 /** Convert legacy Feishu topic ID arrays into maps keyed by topic ID with the chat's last recovery timestamp. */
@@ -579,21 +587,89 @@ function issueSourceRecords(store: Store): void {
   for (const { number, at } of Object.values(pending)) {
     if (!(Date.now() - Date.parse(at) < POLL_HORIZON_MS)) continue
     const retry = retries[number]
-    retries[number] = { ...retry, since: retry && retry.since < at ? retry.since : at, pr: retry?.pr ?? false }
+    // 仓库名到 v12 迁移才知道（`migrateTo12` 会补上并换成 Thread 键），这里先记编号。
+    retries[number] = { ...retry, repository: retry?.repository ?? '', number, since: retry && retry.since < at ? retry.since : at, pr: retry?.pr ?? false }
   }
   if (Object.keys(retries).length) store.set(KV.github.retries, retries)
   const kept = ['github-issue-pending', 'github-issues-since', 'github-issues-started-at', ...store.keys('github-issue-eligibility:')]
   for (const name of kept) store.delete(name)
 }
-/** Consolidate per-issue/PR notification and thread subscription cursors into a single cursor holding the later timestamp. */
-function githubCursors(store: Store): void {
-  for (const name of [...store.keys('github-thread:'), ...store.keys('thread-since:github:')]) {
-    const at = store.get<string>(name as Key<string>)
-    const cursor = KV.github.cursor(Number(name.slice(name.lastIndexOf(':') + 1)))
-    const current = store.get(cursor)
-    if (at && !(current && current >= at)) store.set(cursor, at)
-    store.delete(name)
+/**
+ * Runs the schema 11 to schema 12 step: the GitHub Source moves from one Repository to a list of them (plan A), so its
+ * settings, cursors, stream state, CI fingerprints, and pending reads all become keyed by Repository.
+ */
+export function migrateTo12(store: Store): void {
+  step('the settings', () => {
+    for (const name of ['settings', ...store.keys('settings-version:')]) {
+      const value = store.get<unknown>(name as Key<unknown>)
+      if (value === undefined) continue
+      // 设置快照包着 `{ source, settings }`；当前设置就是这个对象本身。
+      const wrapped = isObject(value) && 'settings' in value
+      const migrated = migrateSettings(wrapped ? value.settings : value)
+      store.set(name as Key<unknown>, wrapped ? { ...value, settings: migrated } : migrated)
+    }
+  })
+  const repository = githubRepositories(store)[0] ?? ''
+  step('the GitHub state', () => {
+    moveCursors(store, repository)
+    moveFamily(store, 'github-stream:', repository ? `${repository}#` : '')
+    moveFamily(store, 'github-ci:', repository ? `${repository}#` : '')
+    moveBranchCi(store, repository)
+    moveRetries(store, repository)
+  })
+}
+/** The repositories the GitHub Source watches after the settings migration; the first one owns the migrated state. */
+function githubRepositories(store: Store): string[] {
+  const settings = store.get<Stored>('settings' as Key<Stored>)
+  const sources = isObject(settings) && isObject(settings.sources) ? settings.sources : undefined
+  const instance = isObject(sources?.github) ? sources.github : undefined
+  const config = isObject(instance) && isObject(instance.config) ? instance.config : undefined
+  const list = config && Array.isArray(config.repositories) ? config.repositories : []
+  return list.map(item => isObject(item) && typeof item.repository === 'string' ? item.repository : '').filter(Boolean)
+}
+/** Moves one cursor family onto repository-qualified keys, dropping the values no Repository can own. */
+function moveFamily(store: Store, prefix: string, next: string): void {
+  for (const name of store.keys(prefix)) {
+    const value = store.get<unknown>(name as Key<unknown>)
+    store.delete(name as Key<unknown>)
+    if (next) store.set(`${prefix}${next}${name.slice(prefix.length)}` as Key<unknown>, value)
   }
+}
+/** Consolidates the legacy per-number cursors (`github-cursor:7`, `github-thread:7`) onto `github-cursor:<repository>#7`, keeping the later time. */
+function moveCursors(store: Store, repository: string): void {
+  const latest = new Map<number, string>()
+  const collect = (name: string): void => {
+    const at = store.get<string>(name as Key<string>)
+    const number = Number(name.slice(name.lastIndexOf(':') + 1))
+    store.delete(name as Key<string>)
+    if (typeof at === 'string' && Number.isInteger(number) && !(latest.get(number)! > at)) latest.set(number, at)
+  }
+  for (const name of store.keys('github-cursor:')) collect(name)
+  for (const name of store.keys('github-thread:')) collect(name)
+  for (const name of store.keys('thread-since:github:')) collect(name)
+  if (!repository) return
+  for (const [number, at] of latest) store.set(KV.github.cursor(repository, number), at)
+}
+/** The default-branch CI state was one record; it becomes one per Repository. */
+function moveBranchCi(store: Store, repository: string): void {
+  const name = 'github-branch-ci' as Key<unknown>
+  const value = store.get<unknown>(name)
+  store.delete(name)
+  if (value !== undefined && repository) store.set(`github-branch-ci:${repository}` as Key<unknown>, value)
+}
+/** The pending reads were keyed by number; they become keyed by Thread and carry their Repository. */
+function moveRetries(store: Store, repository: string): void {
+  const name = 'github-retry' as Key<Record<string, Stored>>
+  const retries = store.get(name)
+  if (!retries) return
+  const moved: Record<string, Stored> = {}
+  for (const [key, value] of Object.entries(retries)) {
+    const number = isObject(value) && typeof value.number === 'number' ? value.number : Number(key)
+    if (!repository || !Number.isInteger(number)) continue
+    moved[`${repository}#${number}`] = { ...(isObject(value) ? value : {}), repository, number }
+  }
+  store.delete(name)
+  if (Object.keys(moved).length) store.set(name, moved)
 }
 /** Attach trigger IDs to pending assessment effects and re-enqueue undelivered active evaluations so their timeout deadlines start. */
 function assessmentTriggers(store: Store): void {

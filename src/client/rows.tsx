@@ -15,11 +15,14 @@ export function TicketLine({ ticket, question, onChanged, context }: {
   const after = async (request: Promise<unknown>) => { await request; await onChanged?.() }
   const note = question && ticket.note && { ...ticket.note, text: readableMarkers(t, ticket.note.text) }
   const answer = ticket.reply && ticket.stage === 'person' && ticket.action === 'answer' ? ticket.reply : undefined
-  return <li className="dt-row dt-link dt-ticket" data-state={question ? status.dot : undefined}>
+  // data-state 无条件下发：左侧 2px 状态色条（.dt-ticket::before）以前只在 question 行出现，
+  // 导致 failed/blocked 的工单在列表里没有颜色可循，与详情页 StatusLine 的状态标不一致。
+  return <li className="dt-row dt-link dt-ticket" data-state={status.dot}>
     <div className="dt-ticket-stage"><StageMark state={status.dot} icon={status.icon} label={status.label} /></div>
     <div className="dt-ticket-body">
-      <div className="dt-row-title"><button type="button" className="dt-open" onClick={() => navigate({ page: 'execution',
-        id: ticket.id })}>{ticket.title}</button></div>
+      {/* 标题单行省略（.dt-open），只有 title 能给出全文；同时与 Thread/Decision 行一样过 readableMarkers。 */}
+      <div className="dt-row-title"><button type="button" className="dt-open" title={ticket.title} onClick={() => navigate({ page: 'execution',
+        id: ticket.id })}>{readableMarkers(t, ticket.title)}</button></div>
       <div className="dt-row-meta dt-ticket-meta">
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
         {context && <ContextTag />}
@@ -28,13 +31,16 @@ export function TicketLine({ ticket, question, onChanged, context }: {
           : <When at={ticket.updatedAt} />}
       </div>
       {/* Always render the actions container so every Ticket row keeps a uniform three-line height. */}
-      <div className="dt-ticket-actions">{onChanged && <>
+      {/* v2 行原语：操作统一收在行尾的 .dt-row-actions，与详情页的 Assignment 行同一收尾位置。 */}
+      <div className="dt-ticket-actions dt-row-actions">{onChanged && <>
         {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
           answer.source) })}</ActionLink>}
         {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
           message={t('retryConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
-        {ticket.actions.retry && ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
+        {/* 工单的 worker 会话在侧栏里是隐藏的（hideOwn 藏掉了 worker-* 行），列表行必须给出入口：
+            只要这张工单已经有会话就显示，不再只在可重试时才显示。 */}
+        {ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
         {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
           message={t('stopConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
@@ -47,12 +53,13 @@ function ContextTag() {
   const { t } = usePanel()
   return <Tag tone="quiet" title={t('contextOnlyHint')}>{t('contextOnly')}</Tag>
 }
-/** Thread list row; on a Ticket page, `ticketId` omits that Ticket from fanout targets and `context` marks context-only threads. */
+/** Thread list row; on a Ticket page, \`ticketId\` omits that Ticket from fanout targets and \`context\` marks context-only threads. */
 export function ThreadLine({ thread, ticketId, context }: { thread: ThreadRow; ticketId?: string; context?: boolean }) {
   const { t, navigate } = usePanel()
   const live = thread.tickets.filter(ticket => ticket.state === 'open' && ticket.id !== ticketId)
   const { dot, icon, label } = threadMark(t, thread)
-  const reaches = live.length > 0 && `${live[0]!.title}${live.length > 1 ? t('andMore', { count: live.length - 1 }) : ''}`
+  // 用字符串拼接代替模板字面量，输出与原来完全一致（标题 + 可选「等 N 个」）。
+  const reaches = live.length > 0 && (live[0]!.title + (live.length > 1 ? t('andMore', { count: live.length - 1 }) : ''))
   return <li className="dt-row dt-link dt-ticket">
     <div className="dt-ticket-stage"><StageMark state={dot} icon={icon} label={label} /></div>
     <div className="dt-ticket-body">
@@ -81,6 +88,8 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
   const mark = decisionMark(t, decision.outcome)
   const preview = readableMarkers(t, decision.preview)
   const reason = decision.reason ? reasonLabel(t, decision.reason) : ''
+  // 闭环可见性：行内保留规则命中数与关联工单入口，二者都取自这条决策自身的字段。
+  const ticketId = decision.ticketId
   const open = () => decision.ticketId ? navigate({ page: 'execution', id: decision.ticketId })
     : navigate({ page: 'trigger', id: decision.thread, query: { trigger: decision.triggerIds[0] ?? '' } })
   return <li className="dt-row dt-link dt-ticket">
@@ -95,8 +104,14 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
       <div className="dt-row-meta dt-line">
         {reason && <span className="dt-line-text">{reason}</span>}
         {matched.length > 0 && <LabelValue label={t('ruleLabel')} value={matched.join(t('listSeparator'))} />}
+        {decision.rules.length > 0 && <LabelValue label={t('rules')} value={matched.length + '/' + decision.rules.length} />}
         <When at={decision.at} />
       </div>
+      {/* 关联工单入口收在行尾 .dt-row-actions，与 Ticket/Thread 行收尾位置一致；没有工单时整块不渲染，行高不变。 */}
+      {ticketId && <div className="dt-row-actions">
+        <button type="button" className="dt-textlink" title={decision.ticketTitle}
+          onClick={() => navigate({ page: 'execution', id: ticketId })}>{t('flowTickedLabel')}</button>
+      </div>}
     </div>
   </li>
 }

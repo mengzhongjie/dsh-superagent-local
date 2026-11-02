@@ -1,12 +1,13 @@
 /** Thread detail page: Trigger timeline with gap-free pagination, Decisions, subscribed Tickets, and correlated Threads. */
 import { useEffect, useState, type ReactNode } from 'react'
 import { ApiError, usePoll, type ThreadPageView, type TriggerRow } from './api.ts'
-import { Button, DisclosureRow, Icon, Tag } from './controls.tsx'
+import { DisclosureRow, Icon, Tag } from './controls.tsx'
 import { decisionMark } from './marks.ts'
 import { useAction, usePanel } from './provider.tsx'
 import { DecisionLine, Earlier, TicketLine, automatedRuns } from './rows.tsx'
 import { actorName, errorText, readableMarkers, reasonLabel, valueLabel, when, type T } from './text.ts'
-import { ActionLink, ClampText, ConfirmButton, Hint, LoadState, PageHead, Section, When } from './widgets.tsx'
+import { ActionLink, Card, ClampText, ConfirmButton, DetailLayout, Empty, ErrorLine, Hint, LoadMore, LoadState, LoopTrack, PageHead,
+  StatusLine, When, type LoopStep } from './widgets.tsx'
 
 /** Disposition tags for a Trigger; omits `ignore` (the common case) and suppresses fanout tags when every target Ticket is already listed in `subscribed`. */
 function triggerTags(t: T, trigger: TriggerRow, subscribed?: Set<string>): ReactNode {
@@ -35,8 +36,9 @@ function TriggerItem({ trigger, earlier, target, subscribed, requeue }: {
     if (element && target === trigger.id
       && !element.dataset.scrolled) { element.dataset.scrolled = '1'; element.scrollIntoView?.({ block: 'center' }) }
   }
-  return <li id={`trigger-${trigger.id}`} className={`dt-event${target === trigger.id ? ' dt-highlight' : ''}${trigger.human ? ''
-    : ' dt-event-quiet'}`} ref={scroll}>
+  // 状态类名用拼接代替模板字面量，输出与原表达式一致。
+  return <li id={'trigger-' + trigger.id} className={'dt-event' + (target === trigger.id ? ' dt-highlight' : '')
+    + (trigger.human ? '' : ' dt-event-quiet')} ref={scroll}>
     <div className="dt-event-foot"><strong className="dt-event-actor">{actorName(t, trigger.actor)}</strong><When
       at={trigger.at} /></div>
     <ClampText text={readableMarkers(t, trigger.text || trigger.preview)} />
@@ -113,64 +115,109 @@ export function ThreadPage({ id, target }: { id: string; target?: string }) {
     const result = await call('POST triggers/:id/requeue', { id: trigger })
     if (!result.queued) notify(t('requeueAlready'))
   }, { reload })
+  // 记录已被删除（404）时是终态：继续渲染缓存的时间线会让人误以为线程还活着，因此直接切空态。
+  if (error instanceof ApiError && error.missing) return <>
+    <PageHead title={t('term.thread')} />
+    <Empty icon="question" title={t('notFound')} hint={t('threadNotFound')} />
+  </>
   if (!data) return <><PageHead
-    title={t('term.thread')} />{error instanceof ApiError && error.missing ? <Hint>{t('threadNotFound')}</Hint> : <LoadState
-      error={error} loading />}</>
+    title={t('term.thread')} />{error ? <LoadState error={error} loading={false} onRetry={() => { void reload() }}
+      /> : <LoadState loading />}</>
   const subscribed = new Set(data.tickets.map(ticket => ticket.id))
   // Never fold a deep-linked `target` Trigger into an automated run.
-  const sender = (trigger: TriggerRow) => !trigger.human && trigger.id !== target ? `${trigger.actor.source}:${trigger.actor.id}`
-    : undefined
+  const sender = (trigger: TriggerRow) => !trigger.human && trigger.id !== target
+    ? trigger.actor.source + ':' + trigger.actor.id : undefined
   const unsubscribe = async () => {
     const result = await call('POST threads/:key/unsubscribe', { key: data.key })
     if (result.context_delivery === 'pending') notify(t('unsubscribePending'))
     await reload()
   }
+  // 决策闭环：触发 → 决策 → 回报（工单把触发交还）→ 评估 → 回流策略。数字全部来自本次 GET threads/:key
+  // 的返回（timeline / decisions / evaluating / pending）与已加载的旧页，不额外请求。
+  const handbacks = data.timeline.reduce((sum, item) => sum + item.disposition.handbacks.length, 0)
+  const judged = data.decisions.length
+  // current：有评估在跑＝评估；有排队等评估的触发＝等决策；有在打工单＝等回报；其余没有当前步。
+  const currentStep = data.evaluating ? 3 : data.stage === 'queued' ? 1 : data.stage === 'subscribed' ? 2 : -1
+  const scrollTo = (section: string) => () => document.getElementById(section)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  const loopSteps: LoopStep[] = [
+    // 触发：这条线程已加载的触发条数（加载更多后同步变多）。
+    { label: t('flowTriggeredLabel'), value: data.timeline.length, onSelect: scrollTo('thread-timeline'),
+      state: data.timeline.length > 0 ? 'done' : 'pending' },
+    // 决策：决策列表条数；没有决策时显式写「未开始」。
+    { label: t('flowDecidedLabel'), value: judged > 0 ? judged : t('loopPending'),
+      onSelect: judged > 0 ? scrollTo('thread-decisions') : undefined,
+      state: currentStep === 1 ? 'current' : judged > 0 ? 'done' : 'pending' },
+    // 回报：工单把触发交还并带原因的条数（handbacks）。
+    { label: t('flowReportedLabel'), value: handbacks, onSelect: scrollTo('thread-timeline'),
+      state: currentStep === 2 ? 'current' : handbacks > 0 ? 'done' : 'pending' },
+    // 评估：评估中显示在评的触发数，否则显示已评估的决策数。
+    { label: t('flowEvaluatingLabel'), value: data.evaluating ? data.evaluating.triggers : judged,
+      state: currentStep === 3 ? 'current' : judged > 0 && !data.evaluating ? 'done' : 'pending' },
+    // 回流：还没回到策略的触发数（pending = 正在等评估的）。
+    { label: t('flowReturnedLabel'), value: data.pending,
+      state: judged > 0 && data.pending === 0 && !data.evaluating ? 'done' : 'pending' },
+  ]
   return <>
     <PageHead title={readableMarkers(t, data.title)}>{data.url && <ActionLink href={data.url}>{t('openOriginal')}</ActionLink>}</PageHead>
-    {error && <LoadState error={error} loading={false} />}
-    <div className="dt-row-meta dt-status-line">
-      <span>{valueLabel(t, 'source', data.source)}</span><span>{t('threadLatest',
-        { time: when(data.lastAt, t('lang')) })}</span><span>{t('threadCreated', { time: when(data.createdAt, t('lang')) })}</span>
-    </div>
-    {data.evaluating && <p className="dt-banner">
-      {t('evaluatingBanner', { count: data.evaluating.triggers, strength: valueLabel(t, 'strength', data.evaluating.strength),
-        deadline: when(data.evaluating.deadline, t('lang')) })}
-    </p>}
-    {data.pollError && <p className="dt-error dt-clamp">{t('pollFailed', { error: data.pollError })}</p>}
-    {data.tickets.length > 0 && <Section title={t('subscribedTickets')} count={data.tickets.length}>
-      <ul className="dt-list">{data.tickets.map(ticket => <TicketLine key={ticket.id} ticket={ticket}
-        context={data.context.includes(ticket.id)} />)}</ul>
-    </Section>}
-    {data.decisions.length > 0 && <DisclosureRow icon={<Icon name="decision" />} title={t('threadDecisions',
-      { count: data.decisions.length })} open={decisionsOpen}
-      onToggle={() => setDecisionsOpen(!decisionsOpen)}>
-      <div className="dt-disclosure-body"><ul className="dt-list">{data.decisions.map(decision => <DecisionLine key={decision.id}
-        decision={decision} />)}</ul></div>
-    </DisclosureRow>}
-    {data.correlated.length > 0 && <Section title={t('term.correlation')}>
-      <ul className="dt-plain-list">{data.correlated.map(item => <li key={item.key}>
-        <button type="button" className="dt-textlink" onClick={() => navigate({ page: 'trigger', id: item.key })}>{readableMarkers(t,
-          item.title)}</button>
-      </li>)}</ul>
-    </Section>}
-    <Section title={t('timeline')} count={t('newestFirst')}>
-      {data.timeline.length ? <ol className="dt-timeline">{automatedRuns(data.timeline.slice().reverse(), sender).map(({ item,
-        earlier: folded }) =>
-        <TriggerItem key={item.id} trigger={item} earlier={folded} target={target} subscribed={subscribed}
-          requeue={item.actions.requeue ? { busy: requeue.busy, run: () => { void requeue.run(item.id) } } : undefined} />)}</ol>
-            : <Hint>{t('noTriggers')}</Hint>}
-      {data.earlier && <div>
-        <Button variant="outline" size="sm" icon={<Icon name="chevron-down"
-          size={14} />} disabled={earlier.busy} onClick={() => { void earlier.run(data) }}>
-          {t('loadEarlier')}
-        </Button>
-      </div>}
-    </Section>
-    {data.tickets.length > 0 && <div className="dt-danger-zone">
-      <span className="dt-hint">{t('unsubscribeHint')}</span>
-      <ConfirmButton variant="outline" icon="unsubscribe" label={t('unsubscribe')} title={t('unsubscribeTitle')}
-        message={t('unsubscribeConfirm', { title: data.title })}
-        onConfirm={unsubscribe} />
-    </div>}
+    {/* 刷新失败但内容仍在：错误行给重试，页面继续展示上一次的数据，不静默吞掉失败。 */}
+    {error && <LoadState error={error} loading={false} onRetry={() => { void reload() }} />}
+    {/* 决策闭环：把「触发 → 决策 → 回报 → 评估 → 回流」摊在一屏里，当前步由 thread stage 推导，
+        决策/回报两步可点击滚到对应区块。 */}
+    <Card title={t('decisionLoop')} hint={t('loopHint')}>
+      <LoopTrack steps={loopSteps} />
+    </Card>
+    {/*
+      详情页模板（v2）：主列 = 状态行 / 评估横幅 / 订阅工单 / 决定 / 关联线程 / 时间线；
+      右栏 = 危险操作（退订）。Thread 的元信息本来就在状态行里，右栏不再重复一份。
+    */}
+    <DetailLayout
+      main={<>
+        <StatusLine>
+          <span>{valueLabel(t, 'source', data.source)}</span>
+          <span>{t('threadLatest', { time: when(data.lastAt, t('lang')) })}</span>
+          <span>{t('threadCreated', { time: when(data.createdAt, t('lang')) })}</span>
+        </StatusLine>
+        {data.evaluating && <p className="dt-banner">
+          {t('evaluatingBanner', { count: data.evaluating.triggers, strength: valueLabel(t, 'strength', data.evaluating.strength),
+            deadline: when(data.evaluating.deadline, t('lang')) })}
+        </p>}
+        {/* 轮询错误可能是长文本：ErrorLine 自带 clamp 与 title，截断后仍能悬停看全文。 */}
+        {data.pollError && <ErrorLine error={t('pollFailed', { error: data.pollError })} clamp />}
+        {data.tickets.length > 0 && <Card title={t('subscribedTickets')}
+          actions={<span className="dt-count">{data.tickets.length}</span>}>
+          <ul className="dt-list">{data.tickets.map(ticket => <TicketLine key={ticket.id} ticket={ticket}
+            context={data.context.includes(ticket.id)} />)}</ul>
+        </Card>}
+        {/* 决定是一组可折叠的次要内容，保留 DisclosureRow（.dt-disclosure 钩子），不改成 Card 卡片。 */}
+        {/* 包裹层只提供滚动锚点 id，DisclosureRow 的折叠行为不变。 */}
+        {data.decisions.length > 0 && <div id="thread-decisions"><DisclosureRow icon={<Icon name="decision" />} title={t('threadDecisions',
+          { count: data.decisions.length })} open={decisionsOpen}
+          onToggle={() => setDecisionsOpen(!decisionsOpen)}>
+          <div className="dt-disclosure-body"><ul className="dt-list">{data.decisions.map(decision => <DecisionLine key={decision.id}
+            decision={decision} />)}</ul></div>
+        </DisclosureRow></div>}
+        {data.correlated.length > 0 && <Card title={t('term.correlation')}>
+          <ul className="dt-plain-list">{data.correlated.map(item => <li key={item.key}>
+            <button type="button" className="dt-textlink" onClick={() => navigate({ page: 'trigger', id: item.key })}>{readableMarkers(t,
+              item.title)}</button>
+          </li>)}</ul>
+        </Card>}
+        <div id="thread-timeline"><Card title={t('timeline')} actions={<span className="dt-count">{t('newestFirst')}</span>}>
+          {data.timeline.length ? <ol className="dt-timeline">{automatedRuns(data.timeline.slice().reverse(), sender).map(({ item,
+            earlier: folded }) =>
+            <TriggerItem key={item.id} trigger={item} earlier={folded} target={target} subscribed={subscribed}
+              requeue={item.actions.requeue ? { busy: requeue.busy, run: () => { void requeue.run(item.id) } } : undefined} />)}</ol>
+                : <Empty icon="inbox" title={t('noTriggers')} hint={t('emptyListHint')} />}
+          {/* 与三个列表页同一套「加载更多」：LoadMore 原语 + .dt-list-state 容器，不再各页自己拼 Button/div。 */}
+          {data.earlier && <div className="dt-list-state"><LoadMore label={t('loadEarlier')} onMore={() => { void earlier.run(data) }} /></div>}
+        </Card></div>
+      </>}
+      aside={data.tickets.length > 0 ? <div className="dt-danger-zone">
+        <span className="dt-hint">{t('unsubscribeHint')}</span>
+        <ConfirmButton variant="outline" icon="unsubscribe" label={t('unsubscribe')} title={t('unsubscribeTitle')}
+          message={t('unsubscribeConfirm', { title: data.title })}
+          onConfirm={unsubscribe} />
+      </div> : undefined}
+    />
   </>
 }

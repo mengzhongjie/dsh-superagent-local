@@ -4,7 +4,7 @@
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
 import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
@@ -66,7 +66,11 @@ async function written(file: string): Promise<boolean> {
 async function own(file: string, text: string, mode = 0o644): Promise<void> {
   let foreign = false
   try { foreign = !await written(file) } catch { /* The file does not exist yet. */ }
-  if (foreign) throw new SetupError('foreignFile', { file })
+  if (foreign) {
+    // 状态目录里我们自己的位置被别的工具占用（典型：宿主里的 `git config --global` 落到我们指向的 worker 配置）：
+    // 改名留档后重写，别让整个部署检查永久卡在这一步。
+    await rename(file, `${file}.foreign-${Date.now()}`)
+  }
   const temporary = `${file}.${process.pid}.tmp`
   await writeFile(temporary, text, { mode })
   await rename(temporary, file)
@@ -76,8 +80,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repositories' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -121,13 +125,47 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n') + '\n')
 }
 
-/** Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback. */
+/**
+ * Moves a foreign file that occupies one of the worker environment's own places out of the way, keeping it as evidence.
+ * Setup then writes our file again; without this the whole plugin stays paused on a single stray file.
+ */
+export async function adoptForeignFile(stateDir: string, file: string): Promise<void> {
+  const target = resolve(file)
+  const gitconfig = resolve(join(stateDir, 'worker-gitconfig'))
+  const bin = `${resolve(join(stateDir, 'worker-bin'))}/`
+  if (!(target === gitconfig || target.startsWith(bin))) throw new Error('Only the worker files of dsh-superagent can be moved aside')
+  await rename(target, `${target}.foreign-${Date.now()}`)
+}
+
+/** Where the operator's own values are remembered across restarts. */
+export const environmentOriginFile = (stateDir: string): string => join(stateDir, 'environment-origin.json')
+
+/**
+ * Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback.
+ * DSH has no per-session environment hook, so workers inherit `process.env`; the overrides therefore reach the whole host.
+ * The operator's own values are written to `environmentOriginFile` once, because after a hot restart `process.env`
+ * already holds the injected values and snapshotting them would make the pollution permanent.
+ */
 export function applyEnvironment(variables: Record<string, string | undefined>, stateDir: string, path: string): () => void {
   const values = { ...variables, PATH: [workerBin(stateDir), path].join(delimiter) }
-  const previous = Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]))
+  const file = environmentOriginFile(stateDir)
+  const remembered = (): Record<string, string | undefined> | undefined => {
+    try { return JSON.parse(readFileSync(file, 'utf8')) as Record<string, string | undefined> }
+    catch { return undefined }
+  }
+  const stored = remembered()
+  const previous = stored ?? Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]))
+  if (!stored) {
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(file, `${JSON.stringify(previous)}\n`)
+  }
   const apply = (env: Record<string, string | undefined>): void => { for (const [name, value] of Object.entries(env)) { if (value === undefined) delete process.env[name]; else process.env[name] = value } }
   apply(values)
-  return () => { apply(previous) }
+  return () => {
+    apply(previous)
+    // 恢复成功后不再需要这份记录：下次启动重新快照当前（也就是操作者自己的）值。
+    try { unlinkSync(file) } catch { /* 记录可能已被清理 */ }
+  }
 }
 
 /** Spawns a command through the DSH subprocess runtime, which strips credential-shaped environment variables. */

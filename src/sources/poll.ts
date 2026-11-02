@@ -14,15 +14,18 @@ export function polled(ctx: SourceContext, thread: Thread, now = Date.now()): bo
 }
 /** Steps a poll start timestamp back by 5 seconds so late-arriving remote events are not missed; deterministic trigger IDs deduplicate overlaps. */
 export const cursorAt = (started: string): string => new Date(Date.parse(started) - 5000).toISOString()
-/** Polls each subscribed Thread of `source` within the horizon independently; records failures on the Thread as `pollError` (unless `stopped()`) and clears `pollError` on success. */
+/**
+ * Polls each subscribed Thread of `source` within the horizon independently; records failures on the Thread as `pollError` (unless `stopped()`) and clears `pollError` on success.
+ * `keepError` lets a source keep an error it recorded during the same round, such as a Thread GitHub reported deleted elsewhere in the round.
+ */
 export async function pollThreads(ctx: SourceContext, source: string, stopped: () => boolean, poll: (thread: Thread) => Promise<void>,
-  skip: (thread: Thread) => boolean = () => false): Promise<void> {
+  skip: (thread: Thread) => boolean = () => false, keepError: (thread: Thread) => boolean = () => false): Promise<void> {
   for (const thread of ctx.threads.subscribed(source)) {
     if (stopped()) return
     if (skip(thread) || !polled(ctx, thread)) continue
     try {
       await poll(thread)
-      ctx.threads.patch(thread.key, { pollError: undefined })
+      if (!keepError(thread)) ctx.threads.patch(thread.key, { pollError: undefined })
     } catch (error) {
       if (stopped()) return
       ctx.threads.patch(thread.key, { pollError: String(error) })

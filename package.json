@@ -2,7 +2,7 @@
   "name": "dsh-superagent",
   "author": "DeepSeek Harness Team (upstream), local fork maintained by mengzhongjie",
   "license": "MIT",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "dsh-superagent 的本地改造版，作为 DSH（DeepSeek Harness）bundle：需求来自本机操作者的主会话而不是 GitHub/飞书，每个工作区各有一条主会话，主会话只负责路由，真正的活儿派给 Worker 在该工作区目录里执行。",
   "type": "module",
@@ -24,6 +24,7 @@
     "lib",
     "cordis.patch.yml",
     "locale/*.json",
+    "icon.svg",
     "README.md",
     "prompts",
     "skills"
@@ -138,5 +139,6 @@
     "agent",
     "orchestrator",
     "workspace"
-  ]
+  ],
+  "icon": "icon.svg"
 }

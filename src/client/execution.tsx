@@ -3,13 +3,14 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { Button, DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
+import { settingsRoute } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { localized } from './text.ts'
-import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
+import { errorText, localized } from './text.ts'
+import { Card, ConfirmButton, Empty, Hint, LabelValue, ListSection, LoopTrack, PageHead, Section, StatusLine, Toolbar } from './widgets.tsx'
 
 export function ExecutionStatus({ filter: current, state, reload }: {
   filter: TicketFilter; state: StateView; reload: () => Promise<void>
@@ -25,28 +26,51 @@ export function ExecutionStatus({ filter: current, state, reload }: {
     : { tone: 'ongoing', label: t('executorRunning') }
   const action = paused ? 'resumeProcessing' : 'pauseProcessing'
   return <>
-    <StatusHead hint={t('executionStatusIntro')} settings="execution" />
-    <div className="dt-row-meta dt-status-line">
+    {/* 列表页模板（v2）：页面头（标题 + 说明 + 设置入口）→ 筛选条（Toolbar）→ 列表（ListSection 管四态）。
+        一级导航在顶部 TabBar，页面头不显示返回按钮。 */}
+    <PageHead back={false} title={t('term.ticket')} hint={t('executionStatusIntro')}>
+      <Button variant="ghost" size="sm" icon={<Icon name="settings" />}
+        onClick={() => navigate(settingsRoute('execution'))}>{t('tab.settings')}</Button>
+    </PageHead>
+    {/* 状态行只放只读状态；暂停是页面级操作，走 StatusLine 的 actions 槽，不再挤在状态文字之间。 */}
+    <StatusLine actions={<ConfirmButton variant="outline" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)}
+      message={t(paused ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')} onConfirm={pause} />}>
       <span className="dt-status-text" data-state={status.tone}>{status.label}</span>
       {!state.setup.problem && <>
-        <LabelValue label={t('executingLabel')}
-          value={`${state.load.running} / ${maxWorkers}`} /><LabelValue label={t('queuedLabel')} value={state.load.queued} />
+        <LabelValue label={t('executingLabel')} value={state.load.running + ' / ' + maxWorkers} />
+        <LabelValue label={t('queuedLabel')} value={state.load.queued} />
       </>}
-      <ConfirmButton variant="outline" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)} message={t(paused
-        ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')}
-        onConfirm={pause} />
-    </div>
-    <div className="dt-filters">
-      {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}
-        onClick={() => { setLimit(20); navigate({ page: 'execution', query: value === 'open' ? {} : { filter: value } },
-          true) }}>{t(`ticketFilter.${value}`)}</Pill>)}
-    </div>
-    {current === 'idle' && <Hint>{t('idleHint')}</Hint>}
-    <LoadState error={error} loading={!data} />
-    {data && (data.items.length ? <ul className="dt-list">{data.items.map(ticket => ticket.stage === 'person'
-      ? <TicketLine key={ticket.id} ticket={ticket} question
-        onChanged={reloadTickets} /> : <TicketLine key={ticket.id} ticket={ticket} />)}</ul> : <Hint>{t('none')}</Hint>)}
-    {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 20)} />}
+    </StatusLine>
+    {/* 闭环定位条：执行页是闭环里「工作发生」的那一环，把前后环节一起摆出来，随时能跳到决策与评估去看。
+        只有「执行」标成 current（本页就是这一环），其余步骤不臆断完成状态；数字只用本页已有的 state.load。 */}
+    <Card title={t('loopTitle')} hint={t('loopHint')}>
+      <LoopTrack steps={[
+        { label: t('flowDecidedLabel'), hint: t('decisionLoop'), onSelect: () => navigate({ page: 'eval' }) },
+        { label: t('flowTickedLabel'), hint: t('term.ticket'), onSelect: () => navigate({ page: 'execution' }) },
+        { label: t('flowRunningLabel'), value: state.load.running, hint: `${state.load.queued} ${t('queuedLabel')}`,
+          state: 'current', onSelect: () => navigate({ page: 'execution' }) },
+        { label: t('flowEvaluatingLabel'), hint: t('flowJudgedLabel'), onSelect: () => navigate({ page: 'eval' }) },
+        { label: t('flowReturnedLabel'), hint: t('policyVersion'), onSelect: () => navigate(settingsRoute('eval')) },
+      ]} />
+    </Card>
+    {/*
+      四态统一交给 ListSection：首次加载的骨架出现在筛选条之前，筛选条只在拿到数据后渲染，
+      避免加载途中先闪一排筛选项；空列表仍保留筛选条，用户可以立刻换一个过滤条件。
+    */}
+    <ListSection loading={!data} error={error ? errorText(error) : undefined} onRetry={() => { void reloadTickets() }}
+      more={data?.next_offset != null} onMore={() => setLimit(limit + 20)}>
+      {/* v2：筛选 pills 走 Toolbar 左侧；页面级操作（暂停）留在 StatusLine 的 actions 槽。 */}
+      <Toolbar>
+        {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}
+          onClick={() => { setLimit(20); navigate({ page: 'execution', query: value === 'open' ? {} : { filter: value } },
+            true) }}>{t(`ticketFilter.${value}`)}</Pill>)}
+      </Toolbar>
+      {current === 'idle' && <Hint>{t('idleHint')}</Hint>}
+      {data && (data.items.length ? <ul className="dt-list">{data.items.map(ticket => ticket.stage === 'person'
+        ? <TicketLine key={ticket.id} ticket={ticket} question
+          onChanged={reloadTickets} /> : <TicketLine key={ticket.id} ticket={ticket} />)}</ul>
+        : <Empty icon="inbox" title={t('emptyList')} hint={t('emptyListHint')} />)}
+    </ListSection>
   </>
 }
 
@@ -86,7 +110,8 @@ export function ExecutionSettings() {
   const insert = (key: string) => {
     const field = prepare.current
     const at = field?.selectionStart ?? value.prepare.length, to = field?.selectionEnd ?? at
-    edit({ prepare: `${value.prepare.slice(0, at)}"$${key}"${value.prepare.slice(to)}` })
+    // 用拼接代替模板字面量：输出仍是 前缀 + "\$KEY" + 后缀。
+    edit({ prepare: value.prepare.slice(0, at) + '"$' + key + '"' + value.prepare.slice(to) })
     requestAnimationFrame(() => { field?.focus(); const caret = at + key.length + 3; field?.setSelectionRange(caret, caret) })
   }
   return <div className="dt-form">

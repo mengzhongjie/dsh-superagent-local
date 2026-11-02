@@ -19,7 +19,8 @@ it('opens the Decisions under Policy from the flow line with their reasons, Deci
   expect(text()).toContain('@bot 修一下')
   await click(zh['decision.ignore'])
   expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=ignore&window=24h')).toBe(true)
-  expect(text()).toContain(zh.none)
+  // 过滤后没有决策时走统一的空列表文案，不再用各页自己的“暂无。”。
+  expect(text()).toContain(zh.emptyList)
   await click(zh.lastDayOnly)
   expect(server.requests.some(request => request.path === 'decisions?limit=30&kind=ignore')).toBe(true)
 })
@@ -33,7 +34,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   }
   await mount()
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
   await addUser()
   expect(text()).toContain(zh.draftKept)
@@ -75,7 +76,7 @@ it('keeps the Policy to its rules and each Source\'s part, in that Source\'s own
 it('opens the rule list for an invalid field inside it only', async () => {
   await mount()
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   const openRows = () => all('.dt-disclosure[data-open]').length
   await act(async () => { field(zh.evalTimeout).dispatchEvent(new Event('invalid', { bubbles: false })) })
   expect(openRows()).toBe(0)
@@ -87,7 +88,7 @@ it('opens the rule list for an invalid field inside it only', async () => {
 it('syncs a Source\'s list from where the Source keeps it, but not while a Policy draft is unsaved', async () => {
   await mount()
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect([...all('.dt-part select')[0]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['不同步', '另一个群', '团队群'])
   await click(find('立即同步', '.dt-part button'))
   expect(server.requests.some(request => request.path === 'policy-sync/feishu' && request.method === 'POST')).toBe(true)
@@ -101,7 +102,7 @@ it('syncs a Source\'s list from where the Source keeps it, but not while a Polic
 it('adds, copies, renames, disables and deletes rules in Policy without touching Eval', async () => {
   await mount()
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   await click(zh.addRule)
   await type(field<HTMLInputElement>(zh.ruleName), '文档')
   await type(field<HTMLTextAreaElement>(zh.ruleInstruction), '修复失效链接')
@@ -118,7 +119,7 @@ it('adds, copies, renames, disables and deletes rules in Policy without touching
 it('shows the current Policy version once, explains what makes it up, and opens a Mandate\'s version in the Policy history', async () => {
   await mount()
   await click(zh['tab.eval'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
   await settle()
   expect(all('.dt-lv')[0]!.textContent).toBe('策略版本 abcdef12')
   expect(all('.dt-info').map(tip => tip.getAttribute('aria-label')).join('\n')).toContain('策略版本由接单规则、各来源上的策略和评估的接单模式决定')

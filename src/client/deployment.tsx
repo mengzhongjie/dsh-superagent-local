@@ -7,12 +7,12 @@ import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ConfigPageForm } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { LIMITS } from '../limits.ts'
 import type { SetupView } from './api.ts'
-import { InfoTip, Input } from './controls.tsx'
+import { Input } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
-import { Field, Fields } from './settings-kit.tsx'
+import { Field, FieldErrors, FieldGrid, Fields, invalidFields } from './settings-kit.tsx'
 import { setupText, type T } from './text.ts'
-import { CheckSetupButton, Hint, KeyValues, Section, SetupMessage } from './widgets.tsx'
+import { Card, CheckSetupButton, Hint, LoadState, MetaList, PageHead, RepairSetupButton, SetupMessage, StatusLine } from './widgets.tsx'
 
 export type DeploymentForm = ConfigPageForm | undefined
 type Op = Parameters<ConfigPageForm['mutate']>[0][number]
@@ -29,12 +29,17 @@ export function usePageForm(form: ConfigForm<Record<string, unknown>> | undefine
   return useMemo(() => form && state ? { state, mutate: form.mutate.bind(form) } : undefined, [form, state])
 }
 
-/** Deployment configuration form; falls back to read-only display when DSH config forms are unavailable or read-only. */
-export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup: SetupView; form: DeploymentForm; accounts?: boolean }) {
+/**
+ * Deployment configuration form; falls back to read-only display when DSH config forms are unavailable or read-only.
+ * `head` 只给插件管理的整页视图用：面板里的部署页外层已经有 PageHead（分组名），再来一个就是双标题。
+ */
+export function DeploymentPage({ setup, form, accounts: showAccounts, head = false }: {
+  setup: SetupView; form: DeploymentForm; accounts?: boolean; head?: boolean
+}) {
   const { t, notify } = usePanel()
   const snapshot = form?.state
   const editable = snapshot?.status === 'ready' && snapshot.writable
-  // Pass `revision` only while DSH serves writable values so a draft started before `ready` rebases once writable.
+   // Pass `revision` only while DSH serves writable values so a draft started before `ready` rebases once writable.
   const draft = useDraft({ saved: limitsOf(editable ? snapshot.value : setup.machine), revision: editable ? snapshot.revision : undefined,
     reload: async () => {},
     save: async (value, revision, base) => {
@@ -49,47 +54,65 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
   const readOnlyHint = !form ? t('deploymentNoForms') : snapshot?.mode === 'memory' ? t('deploymentReadOnly')
     : snapshot?.status === 'loading' ? t('loading') : snapshot?.status === 'unavailable' ? t('deploymentUnavailable')
     : !editable ? t('deploymentReadOnly') : undefined
-  const limit = (key: typeof MACHINE_LIMITS[number], label: string) => <Field label={label}>
-    <Input type="number" min={LIMITS[key].min} max={LIMITS[key].max} step={1} value={draft.value[key]} disabled={!editable}
+  // 禁用交给外层 fieldset 一处承担，同时逐控件 disabled（jsdom 不实现 fieldset 的禁用语义，只靠 fieldset 断言会假通过）。
+  const limit = (key: typeof MACHINE_LIMITS[number], label: string) => <Field label={label} path={key} required>
+    <Input type="number" min={LIMITS[key].min} max={LIMITS[key].max} step={1} required disabled={draft.busy || !editable}
+      value={draft.value[key]}
       onChange={event => draft.edit({ ...draft.value, [key]: event.target.value })} />
   </Field>
+  // 这一行只讲部署期配置的飞书机器人；机器人检查的失败原因由后端按来源下发，部署页不读专属字段。
+  const botProblem = setup.problems.find(problem => problem.place === 'feishu')
   const feishu = accounts?.feishu ? accounts.feishu.name || accounts.feishu.botId
-    : setup.feishuProblem ? setupText(t, setup.feishuProblem) : t('deploymentFeishuNone')
-  return <form className="dt-form" onSubmit={event => { void draft.submit(event) }}>
-    <Fields disabled={draft.busy}>
-      <Hint>{t('deploymentIntro')}</Hint>
-      {setup.problem && <div className="dt-row-buttons">
-        <p className="dt-error" role="status"><SetupMessage problem={setup.problem} lead /></p><CheckSetupButton />
-      </div>}
-      {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
-        <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
-          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
-        <Hint>{t('deploymentAccountsWhere')}</Hint>
-      </Section>}
-      <Section title={t('deploymentMachine')}>
-        {readOnlyHint && <Hint>{readOnlyHint}</Hint>}
-        <div className="dt-field">
-          <span className="dt-field-head">{t('deploymentStateDir')}<InfoTip text={t('deploymentStateDirHint')} /></span>
-          <span className="dt-mono">{setup.machine.stateDir}</span>
-        </div>
-      </Section>
-      <Section title={t('deploymentLimits')} hint={t('deploymentLimitsHint')}>
-        {limit('promptMaxChars', t('deploymentPromptMaxChars'))}
-        {limit('admissionContextMaxPages', t('deploymentContextPages'))}
-        {limit('admissionContextTimeoutMs', t('deploymentContextTimeout'))}
-      </Section>
-    </Fields>
-    {editable && <SaveBar {...draft} onDiscard={draft.discard} />}
-  </form>
+    : botProblem ? setupText(t, botProblem) : t('deploymentFeishuNone')
+  return <>
+    {head && <PageHead back={false} title={t('settingsGroup.deployment')} />}
+    <form className="dt-form" onSubmit={event => { void draft.submit(event) }}>
+      {/* Setup 问题放在 fieldset 外：只读时字段全禁用，但「重新检查」必须还能点。 */}
+      {setup.problem && <StatusLine actions={setup.problem.code === 'foreignFile' && typeof setup.problem.values.file === 'string'
+        ? <><RepairSetupButton file={setup.problem.values.file} /> <CheckSetupButton /></> : <CheckSetupButton />}>
+        <SetupMessage problem={setup.problem} lead /></StatusLine>}
+      <FieldErrors issues={invalidFields(draft.state)}>
+        <Fields disabled={draft.busy || !editable} label={t('tab.settings')}>
+          <Hint>{t('deploymentIntro')}</Hint>
+          {/* 只读原因用状态行而不是正文段落：它随模式变化，是“现在为什么不能改”。 */}
+          {readOnlyHint && <StatusLine>{readOnlyHint}</StatusLine>}
+          {/* 一张卡一个主题：派生信息 → 本机路径 → 限额，字段只在最后一张卡里进两列栅格。 */}
+          {showAccounts && <Card title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
+            <MetaList items={[
+              { label: t('deploymentRepository'), value: accounts?.repositories.length
+                ? accounts.repositories.join(t('listSeparator')) : t('unsetValue') },
+              { label: t('deploymentAgent'), value: accounts ? `@${accounts.agent}` : t('unsetValue') },
+              { label: t('deploymentFeishu'), value: feishu },
+            ]} />
+            <Hint>{t('deploymentAccountsWhere')}</Hint>
+          </Card>}
+          <Card title={t('deploymentMachine')}>
+            <MetaList items={[{ label: t('deploymentStateDir'),
+              value: <span className="dt-mono">{setup.machine.stateDir}</span> }]} />
+            <Hint>{t('deploymentStateDirHint')}</Hint>
+          </Card>
+          <Card title={t('deploymentLimits')} hint={t('deploymentLimitsHint')}>
+            <FieldGrid>
+              {limit('promptMaxChars', t('deploymentPromptMaxChars'))}
+              {limit('admissionContextMaxPages', t('deploymentContextPages'))}
+              {limit('admissionContextTimeoutMs', t('deploymentContextTimeout'))}
+            </FieldGrid>
+          </Card>
+        </Fields>
+      </FieldErrors>
+      {editable && <SaveBar {...draft} onDiscard={draft.discard} />}
+    </form>
+  </>
 }
 
 /** Plugin Manager config page; includes derived repository and accounts because Source settings live in the main panel. */
 function PluginPage({ form }: { form: DeploymentForm }) {
-  const { t } = usePanel()
-  const { state, error } = usePanelData()
+  const { state, error, reload } = usePanelData()
+  // 加载/失败走统一 LoadState：这里原来手写 p.dt-hint，和其它页的错误播报不一致。
+  // onRetry 不可省：插件管理里没有外层“重新加载”入口，失败后不给按钮就只能重进页面。
   return <div className="dt-embedded">
-    {state ? <DeploymentPage setup={state.setup} form={form} accounts />
-      : error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>}
+    {state ? <DeploymentPage setup={state.setup} form={form} accounts head />
+      : <LoadState loading={error === undefined} error={error} onRetry={() => { void reload() }} />}
   </div>
 }
 /** DSH Plugin Manager config view entry; renders nothing in `summary` mode because DSH displays the package description. */

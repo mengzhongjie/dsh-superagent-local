@@ -1,5 +1,5 @@
-/** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+/** Root panel shell: sticky app bar with global search and glossary, top-level navigation tabs, and active route view. */
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
@@ -12,23 +12,29 @@ import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
-import { SourceStatus } from './source.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
 import { TriggerStatus } from './trigger.tsx'
-import { When } from './widgets.tsx'
+import { ErrorLine, Hint, When } from './widgets.tsx'
 
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
   deploymentForm: DeploymentForm
 }
 
+/* 术语表分组标题：来源仍是领域概念（配置在「设置 › 来源」），但已不是页面，
+   不能再借用删掉的 tab.source 文案，单独给一个 glossaryGroup 键。 */
+const GROUP_HEADING: Record<keyof typeof GLOSSARY, DshSuperagentKey> = {
+  roles: 'glossaryGroup.roles', source: 'glossaryGroup.source', trigger: 'tab.trigger',
+  eval: 'tab.eval', execution: 'tab.execution',
+}
+
 function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = usePanel()
   const chinese = t('tab.overview') === zh['tab.overview']
   const [own, other] = chinese ? [zh, en] : [en, zh]
-  const heading = (group: keyof typeof GLOSSARY) => t(group === 'roles' ? 'glossaryGroup.roles' : `tab.${group}`)
+  const heading = (group: keyof typeof GLOSSARY) => t(GROUP_HEADING[group])
   return <Modal className="dt-glossary-modal" open={open} onClose={onClose} title={t('glossary')} closeLabel={t('close')}
     description={t('glossaryIntro')} footer={<Button variant="primary" onClick={onClose}>{t('close')}</Button>}>
     <div className="dt-glossary-body">
@@ -46,7 +52,8 @@ function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
       <ul className="dt-legend">{(['done', 'ongoing', 'warning', 'error', 'idle'] as const).map(state => <li key={state}>
         <Dot state={state} /><span>{t(`legend.${state}`)}</span>
       </li>)}</ul>
-      <dl className="dt-values">{Object.entries(GLOSSARY_VALUES).map(([group, values]) => <div key={group} style={{ display: 'contents' }}>
+      {/* display:contents 抽成 .dt-contents：内联样式散在 JSX 里既难统一也没法在窄屏规则里覆盖。 */}
+      <dl className="dt-values">{Object.entries(GLOSSARY_VALUES).map(([group, values]) => <div key={group} className="dt-contents">
         <dt>{own[`term.${group}` as DshSuperagentKey]}</dt>
         <dd>{values.map(key => `${own[key]} ${other[key]}`).join(' · ')}</dd>
       </div>)}</dl>
@@ -60,7 +67,8 @@ function Highlight({ text, query }: { text: string; query: string }) {
   return <>{text.slice(0, index)}<mark className="dt-mark">{text.slice(index, index + query.length)}</mark>{text.slice(index + query.length)}</>
 }
 function Result({ name, open, children }: { name: ReactNode; open: (() => void) | undefined; children: ReactNode }) {
-  return <li className="dt-row dt-link"><div className="dt-row-main">
+  // dt-link 决定 hover/光标样式，必须跟着 open 走：被过滤的条目点了没反应，不能装作可点。
+  return <li className={open ? 'dt-row dt-link' : 'dt-row'}><div className="dt-row-main">
     <div className="dt-row-title">{open ? <button type="button" className="dt-open" onClick={open}>{name}</button> : name}</div>
     <div className="dt-row-meta">{children}</div>
   </div></li>
@@ -90,15 +98,21 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
       {result.items.map(item => <Result key={item.id} name={<Highlight text={readableMarkers(t, item.preview) || t('empty')}
         query={query} />}
         open={item.filtered === undefined ? go({ page: 'trigger', id: item.threads[0]!, query: { trigger: item.id } }) : undefined}>
-        <span>{valueLabel(t, 'source', item.source)}</span><span>{actorName(t, item.actor)}</span><When at={item.at} />
+        <span>{valueLabel(t, 'source', item.source)}</span><span>{actorName(t, item.actor)}</span>
         {item.threadTitle && <span className="dt-ellipsis">{t('inThread', { thread: readableMarkers(t, item.threadTitle) })}</span>}
         {item.filtered !== undefined && <span>{t('searchFiltered', { reason: reasonLabel(t, item.filtered) })}</span>}
+        {/* 时间统一放最后：列表行都是「标签→状态→来源→时间」，搜索结果不能自成一套读序。 */}
+        <When at={item.at} />
       </Result>)}
     </ul>}
   </div>
 }
 
-function Header({ masterId }: { masterId: string | undefined }) {
+/**
+ * 顶部应用栏（v2）：左侧产品名 + 面包屑，右侧全局搜索、术语表、打开主会话。
+ * 从「内容区里的一条工具栏」提到最外层吸顶，页面滚动时入口始终在视野内。
+ */
+function AppBar({ masterId, crumbs }: { masterId: string | undefined; crumbs: readonly string[] }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
@@ -121,9 +135,18 @@ function Header({ masterId }: { masterId: string | undefined }) {
     call('GET search', { query: { q: text } }).then(value => { if (request === latest.current) setResult({ query: text, value }) },
       failure => { if (request === latest.current) notify(errorText(failure)) })
   }
-  return <header className="dt-head">
-    <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1></div>
-    <div className="dt-toolbar">
+  return <header className="dt-appbar">
+    <div className="dt-appbar-lead">
+      <span className="dt-appbar-brand">{t('title')}</span>
+      {/* 面包屑：页面名 → 记录名，最后一段是当前位置，不参与点击（详情页的返回走 PageHead）。 */}
+      <span className="dt-crumbs">
+        {crumbs.map((crumb, index) => <Fragment key={`${index}-${crumb}`}>
+          {index > 0 && <Icon name="chevron-right" size={12} />}
+          <span className="dt-crumb" data-current={index === crumbs.length - 1 || undefined}>{crumb}</span>
+        </Fragment>)}
+      </span>
+    </div>
+    <div className="dt-appbar-actions">
       <form ref={search} className="dt-search" role="search" onSubmit={submit} onKeyDown={event => { if (event.key === 'Escape') show() }}>
         <Input type="search" icon={<Icon name="search" />} value={query} placeholder={t('searchPlaceholder')} aria-label={t('searchLabel')}
           onChange={event => { setQuery(event.target.value); if (!event.target.value) show() }} />
@@ -138,16 +161,21 @@ function Header({ masterId }: { masterId: string | undefined }) {
   </header>
 }
 
+/**
+ * 页面骨架（v2）：AppBar（吸顶）→ 一级导航栏（吸顶）→ 唯一滚动内容区。
+ * 导航从左侧竖排 rail 改成顶部横排，内容区因此拿到全宽，详情页才放得下右栏。
+ */
 function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
   useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
-  const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
+  // 等待与失败都复用共享组件：错误走 errorText 并给重试，避免这里自己拼一段不可重试的原文。
+  const waiting = error ? <ErrorLine error={errorText(error)} title={t('loadFailed')} onRetry={reload} />
+    : <Hint>{t('loading')}</Hint>
   const page = (() => {
     switch (route.page) {
       case 'overview': return <OverviewPage />
-      case 'source': return <SourceStatus />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
@@ -158,12 +186,18 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
         deploymentForm={deploymentForm} /> : waiting
     }
   })()
-  return <div className="dt-page">
-    <div className="dt-column">
-      <Header masterId={state?.masterId} />
-      {error && state && <p className="dt-error" role="status">{error.message}</p>}
-      <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
+  // 面包屑：一级是页面名，详情页再补一段记录类型（具体标题由页面内的 PageHead 给出）。
+  const crumbs: string[] = [t(`tab.${route.page}`)]
+  if (route.id !== undefined) crumbs.push(routeLabel(t, route))
+  return <div className="dt-app">
+    <AppBar masterId={state?.masterId} crumbs={crumbs} />
+    <div className="dt-navbar-wrap">
+      <SegmentedTabs variant="bar" label={t('pagesLabel')} value={route.page} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
+    </div>
+    <div className="dt-content">
+      {/* 已经有数据时刷新失败：给出可重试的提示，同时不打断下面继续显示的内容。 */}
+      {error && state && <ErrorLine error={errorText(error)} title={t('loadFailed')} onRetry={reload} />}
       <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
     </div>
   </div>

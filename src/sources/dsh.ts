@@ -6,13 +6,13 @@
  * Trigger → Intake → Eval 判定 → Ticket → Executor 干活 → 回复回到同一个会话。
  *
  * 关键约定：
- * - 一个 Source 实例对应一个工作区（配置里的 workspace），worker 在该目录下干活。
+ * - 一个实例就能覆盖所有工作区：主会话属于哪个工作区，它接下的工单就在哪个目录里执行。
  * - 只有 source.kind === 'user' 的消息才算需求；dsh-superagent 自己注入的回复、
  *   候选卡片带的是别的 kind，不会被当成新需求，从而不会自激成环。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import { z } from 'zod'
 import type { OutboundMessage, Trigger } from '../core/index.ts'
 import { isoTime } from '../core/model.ts'
@@ -65,9 +65,35 @@ export interface DshAttachment {
   bytes?: number
 }
 
-/** DSH 附件库里一个对象的绝对路径：objects/<id 前两位>/<id>。 */
-export const attachmentPath = (id: string): string =>
-  join(homedir(), '.dsh', 'attachments', 'v1', 'objects', id.slice(0, 2), id)
+/** DSH 附件库的对象根目录；附件路径只能落在它下面。 */
+export const ATTACHMENTS_ROOT = join(homedir(), '.dsh', 'attachments', 'v1', 'objects')
+
+/**
+ * 附件对象 ID 的合法形状：字母数字开头，之后只允许字母、数字、下划线和连字符，长度 2–128。
+ *
+ * 为什么必须收紧：附件 id 来自消息内容，而 `attachmentPath` 会把它当路径片段拼接。
+ * 只要求"非空字符串"时，`../../../../tmp/secret` 这类 id 会被 `join()` 规范化到附件库之外，
+ * 随后路径被写进 worker 的任务说明，等于把附件读取边界交给消息内容决定。
+ * 真实 id 是内容的 sha256（64 位小写十六进制）或图片归一化 id，都落在这个字符集里；
+ * 这里刻意不接受 `.`、`/`、`\` 与空串，路径穿越也就不需要再靠 `realpath` 兜底。
+ */
+const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/
+
+/** 判断一个值是否是格式合法的附件对象 ID。 */
+export const isAttachmentId = (id: unknown): id is string => typeof id === 'string' && ATTACHMENT_ID.test(id)
+
+/**
+ * DSH 附件库里一个对象的绝对路径：objects/<id 前两位>/<id>。
+ *
+ * @throws 附件 id 格式不合法时抛错——拼出库外路径比拒绝更危险。
+ */
+export function attachmentPath(id: string): string {
+  if (!isAttachmentId(id)) throw new Error(`Invalid DSH attachment id: ${String(id).slice(0, 40)}`)
+  const path = join(ATTACHMENTS_ROOT, id.slice(0, 2), id)
+  // 防御性复核：即使上面的校验被改坏，也不把附件库之外的路径交给调用方。
+  if (!path.startsWith(ATTACHMENTS_ROOT + sep)) throw new Error('The attachment path leaves the attachment store')
+  return path
+}
 
 /**
  * 从消息内容里挑出附件引用。
@@ -80,7 +106,9 @@ export function attachmentRefs(blocks: readonly { type: string; text?: string; a
   for (const block of blocks) {
     if (block.type !== 'image' && block.type !== 'file') continue
     const raw = block.attachment as { attachmentId?: unknown; mediaType?: unknown; name?: unknown; bytes?: unknown } | undefined
-    if (!raw || typeof raw.attachmentId !== 'string' || raw.attachmentId === '') continue
+    // 只收格式合法的附件对象 ID：非法 id（含路径分隔符、`..`、超长值）在这里就丢掉，
+    // 免得下游把它当路径拼进 worker 的任务说明。
+    if (!raw || !isAttachmentId(raw.attachmentId)) continue
     refs.push({
       id: raw.attachmentId,
       kind: block.type,
@@ -150,17 +178,14 @@ export interface DshDelivery {
   deliver(id: string, text: string, sessionId?: string): Promise<void>
 }
 
-/** 面板字段：工作区路径，带填写提示。 */
+/**
+ * 面板字段：只有显示名。
+ *
+ * 以前这里让人填一个「工作区目录」，但本地来源其实是监听**所有**工作区的主会话，
+ * 工单落在消息所在的那个工作区（见 dshTrigger 的 workspace 来源），填一个固定目录既误导又没用。
+ * schema 里仍保留 workspace 作为旧配置的兜底，只是不再出现在面板上。
+ */
 const fields: SourceKind<DshConfig>['fields'] = [
-  {
-    key: 'workspace',
-    type: 'text',
-    label: { zh: '工作区目录', en: 'Workspace' },
-    hint: {
-      zh: '该实例接下的工单在这个目录里执行；留空则用执行器的默认工作目录（stateDir/work）。',
-      en: 'Tickets this instance accepts run in this directory; leave empty to use the Executor default (stateDir/work).',
-    },
-  },
   {
     key: 'name',
     type: 'text',
@@ -178,10 +203,10 @@ const fields: SourceKind<DshConfig>['fields'] = [
 export function dshKind(delivery: DshDelivery): SourceKind<DshConfig> {
   return {
     kind: SOURCE,
-    title: { zh: '本机操作者', en: 'Local operator' },
+    title: { zh: '本机操作者（所有工作区）', en: 'Local operator (all workspaces)' },
     description: {
-      zh: '把操作者在主会话里说的话当作需求来源，回复回到同一个会话。',
-      en: 'Treats what the operator types in the main Session as requests and replies in the same Session.',
+      zh: '监听所有工作区的主会话：操作者在哪里说话，需求就在那个工作区里执行，回复回到同一个会话。',
+      en: 'Watches the main Session of every workspace: a request runs in the workspace it was typed in, and the reply returns to that Session.',
     },
     schema: DshConfigSchema,
     fields,

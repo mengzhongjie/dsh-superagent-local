@@ -1,7 +1,8 @@
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
-import { IM_WORDS } from '../../infra/text.ts'
+import type { Commands } from '../../infra/commands.ts'
+import { IM_WORDS, sameName } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
@@ -9,6 +10,24 @@ import type { Store } from '../store.ts'
 import { reportRelay, threadFollowedNotice } from '../notices.ts'
 import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
+
+/**
+ * 从工作区的 git remote 认出它属于哪个被监听的仓库。
+ *
+ * 本地来源（dsh）的 Trigger 只记工作区、不记仓库：工单带着 PR 编号回报时，仓库必须由这个工作区自己认出来，
+ * 否则多仓库配置下会去监听列表的第一个仓库读同号 PR——读到别人的 PR，或者直接失败、报告落不了库。
+ * 认不出（不是 git 仓库、或 remote 指向未监听的仓库）就返回空串，由调用方回退到监听列表第一个。
+ */
+export async function repositoryOfWorkspace(commands: Pick<Commands, 'run'>, repositories: readonly string[],
+  directory: string): Promise<string> {
+  if (!directory) return ''
+  try {
+    const url = (await commands.run('git', ['-C', directory, 'remote', 'get-url', '--push', 'origin'])).trim()
+    const match = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i.exec(url)
+    const name = match ? `${match[1]}/${match[2]}` : ''
+    return repositories.find(item => sameName(item, name)) ?? ''
+  } catch { return '' }
+}
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
@@ -93,7 +112,16 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
-        const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
+        // 工单的 PR 属于一个仓库：先看 Trigger 记下的仓库；本地来源不记仓库时，从触发它的工作区 git remote 认；
+        // 都认不出才退回监听列表里的第一个（单仓库的老行为）。
+        const meta = host.store.triggers.get(current.origin.triggerId)?.meta
+        const recorded = typeof meta?.repository === 'string' ? meta.repository : ''
+        const workspace = typeof meta?.workspace === 'string' ? meta.workspace : ''
+        const repository = recorded
+          || (args.pr_number != null ? await repositoryOfWorkspace(host.github.commands, host.github.deployment.repositories, workspace) : '')
+          || (host.github.deployment.repositories[0] ?? '')
+        if (args.pr_number != null && !repository) throw new Error('This installation watches no GitHub repository, so a pull request cannot be read')
+        const pull = args.pr_number != null ? await readPull(host.github, repository, args.pr_number, signal) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)

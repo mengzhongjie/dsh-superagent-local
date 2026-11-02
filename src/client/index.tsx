@@ -13,6 +13,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
+import { keepFrameInPlace } from './frame.ts'
 import { en, zh } from './locales.ts'
 import type { T } from './text.ts'
 
@@ -82,9 +83,9 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
     }
     return id
   }
-  // 主子不占工作区组里的一行：★ 按钮就是它的入口，列表里再出现一次只是噪音。
+  // 主子不占工作区组里的一行：入口按钮就是它的门，列表里再出现一次只是噪音。
   // 没有从 Host 的会话清单里摘掉它 —— 摘掉之后 uiWorkspace.openSession 就不再认这个 id，
-  // ★ 反而打不开。所以分流留在这一层：数据完整，只有侧栏这里不画。
+  // 入口按钮反而打不开。所以分流留在这一层：数据完整，只有侧栏这里不画。
   // 用 style 而不是删节点，是因为行由 React 渲染，删掉会在下次渲染时又回来。
   const hide = (ids: readonly string[]) => {
     for (const id of ids) {
@@ -110,8 +111,46 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
     const key = row?.getAttribute('data-row-key') ?? ''
     return key.startsWith('workspace:') ? key.slice('workspace:'.length) : undefined
   }
+  /**
+   * 插件自己建的会话：`worker-`（每张工单的执行者）与 `orchestrator-`（主会话与评估）。
+   * 它们的生命周期由我们管，不该再占侧栏一行 —— 人要进主会话，用行上的 M 气泡。
+   */
+  const ours = (id: string): boolean => id.startsWith('worker-') || id.startsWith('orchestrator-')
+  const rowId = (row: Element): string => (row.getAttribute('data-row-key') ?? '').replace(/^session:/, '')
+  /** 一个组行下面挂着哪些会话行：优先找子树，宿主把行铺平当兄弟时退回向后扫描。 */
+  const sessionsOf = (row: HTMLElement): HTMLElement[] => {
+    const inside = [...row.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')]
+    if (inside.length > 0) return inside
+    const found: HTMLElement[] = []
+    for (let node = row.nextElementSibling; node !== null; node = node.nextElementSibling) {
+      const key = node.getAttribute('data-row-key') ?? ''
+      if (key.startsWith('workspace:')) break
+      if (key.startsWith('session:')) found.push(node as HTMLElement)
+      else found.push(...[...node.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')])
+    }
+    return found
+  }
+  /**
+   * 收起插件自己的会话行；一个组里全是这种行时，连组行一起收起来。
+   * 只收「整组都是我们的」的组：用户自己的分组哪怕只多一条真会话，原样保留。
+   */
+  const hideOwn = () => {
+    for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')) {
+      if (!ours(rowId(row))) continue
+      if (row.style.display !== 'none') row.style.display = 'none'
+    }
+    for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="workspace:"]')) {
+      // 状态目录本身（~/.dsh/state/superagent）会被宿主当成一个「工作区」列出来，标题就是目录名；
+      // 它只是插件放库和诊断文件的地方，不是人的工作区，所以直接收起来。
+      const label = (row.textContent ?? '').trim()
+      if (label === 'superagent') { if (row.style.display !== 'none') row.style.display = 'none'; continue }
+      const sessions = sessionsOf(row)
+      if (sessions.length === 0 || !sessions.every(session => ours(rowId(session)))) continue
+      if (row.style.display !== 'none') row.style.display = 'none'
+    }
+  }
   let hidden: string[] = []
-  // 名单是服务端给的，而服务端会随着“有人点了别的工作区的 ★”而变多。
+  // 名单是服务端给的，而服务端会随着“有人点了别的工作区的入口按钮”而变多。
   // 每次 DOM 变动都重取一遍太费，节流到 3 秒，保证新出现的主子几秒内也被藏掉。
   let syncedAt = 0
   const syncHidden = async () => {
@@ -121,8 +160,58 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
     const state = await mainState()
     if (state.masterIds?.length) { hidden = state.masterIds; hide(hidden) }
   }
+  /**
+   * 组行的「动作区」：放「…」和「＋」的那一格。
+   *
+   * 优先认语义标记：桌面端常装 claude-style 这类主题插件，它会给行内各段打
+   * `data-dsh-claude-part` 标记，其中动作区是 `row-actions`。
+   * 没有标记的宿主退回结构找法：行内「直接子元素里有 <button>」的最深容器。
+   * 两样都找不到就返回 undefined，由调用方退回行尾方案。
+   */
+  const actionsOf = (row: HTMLElement): HTMLElement | undefined => {
+    const tagged = row.querySelector<HTMLElement>('[data-dsh-claude-part~="row-actions"]')
+    if (tagged !== null) return tagged
+    let found: HTMLElement | undefined
+    for (const element of row.querySelectorAll<HTMLElement>('*')) {
+      // 按钮自己不算容器；只看「子元素就是按钮」的容器。
+      if (element.tagName === 'BUTTON') continue
+      if ([...element.children].some(child => child.tagName === 'BUTTON')) found = element
+    }
+    return found
+  }
+  // 侧栏结构样本：一页只回传一次，落盘在 stateDir/diagnostics 下。
+  // 只做诊断，失败不影响功能，所以吞掉错误。
+  let dumped = false
+  const dump = (row: HTMLElement, strategy: string) => {
+    if (dumped) return
+    dumped = true
+    // 样本取整条侧栏：分组标题、行内各段、动作区都在一起，才好判断额外的注入点在哪。
+    let root = row
+    for (let parent = row.parentElement; parent && parent.querySelectorAll('[data-row-key]').length > 1; parent = parent.parentElement) root = parent
+    const url = new URL('/orchestrator/api/sidebar-dom', window.location.href)
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ html: root.outerHTML.slice(0, 190_000), strategy }),
+    }).catch(() => undefined)
+  }
+  // DSH 内核给「没归到工作区的会话桶」的固定文案来自它自己的 i18n 表（group.ungrouped），
+  // 插件改不了那张表，所以在这一行渲染出来之后把标签改写成本产品对外的叫法。
+  const UNGROUPED = ['未分组', 'Ungrouped']
+  const relabel = () => {
+    for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="workspace:"]')) {
+      // 标签既可能在行内某一段里，也可能直接是行的文本子节点，两处都看。
+      for (const node of [row, ...row.querySelectorAll<HTMLElement>('*')]) {
+        for (const child of node.childNodes) {
+          if (child.nodeType !== Node.TEXT_NODE) continue
+          const text = child.textContent?.trim() ?? ''
+          if (UNGROUPED.includes(text)) child.textContent = 'chat'
+        }
+      }
+    }
+  }
   const insert = () => {
-    // 隐藏排在插入之后：同一轮 DOM 变动里先保证入口在，再把列表项压掉。
+        // 隐藏排在插入之后：同一轮 DOM 变动里先保证入口在，再把列表项压掉。
     hide(hidden)
     for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="workspace:"]')) {
       // 已经有按钮说明这一行处理过了，跳过可以避免每次 DOM 变动都重建节点。
@@ -132,14 +221,17 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.setAttribute(ENTRY_ATTR, '1')
       button.title = t('mainEntry')
       button.setAttribute('aria-label', t('mainEntry'))
-      button.textContent = '★'
-      // 排在行的最后一个子元素上（动作区之后），既不会被动作区的显形推走，也不会压住它：
-      // 行内元素的横坐标由前面内容的宽度决定，最后一个则贴着右边界算，前面怎么变都不动。
+      // 入口画成一枚气泡，气泡里是 M（main）：圆形带一个左下角的尖，读起来像一条消息，
+      // 而且比星号更贴近「这是主会话」的含义，也不会被误认成收藏。
+      button.textContent = 'M'
+      // 摆在动作区里（和「…」「＋」并排）：间距由动作区自己的 gap 决定，所以 margin 归零。
       button.style.cssText = 'display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;'
-        + 'width:18px;height:18px;margin:0 0 0 2px;padding:0;border:0;border-radius:4px;'
-        + 'background:transparent;color:inherit;opacity:.5;cursor:pointer;font-size:12px;line-height:1'
+        + 'width:18px;height:18px;margin:0;padding:0;border:1px solid currentColor;'
+        // 三个角是圆的，左下角收成小圆角，看起来就是一个气泡的尾巴。
+        + 'border-radius:50% 50% 50% 5px;background:transparent;color:inherit;opacity:.55;'
+        + 'cursor:pointer;font-size:9px;font-weight:600;line-height:1;letter-spacing:0'
       button.addEventListener('mouseenter', () => { button.style.opacity = '1' })
-      button.addEventListener('mouseleave', () => { button.style.opacity = '.5' })
+      button.addEventListener('mouseleave', () => { button.style.opacity = '.55' })
       // 这一行整行可拖拽（draggable="true"）：鼠标按下如果冒泡到行上就会启动原生拖拽，
       // 拖拽一开始 click 就不再派发，按钮表现为"点不动"。所以在按下阶段就拦掉。
       button.draggable = false
@@ -147,10 +239,22 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation() })
       // 阻止冒泡：这一行本身可点击（折叠/展开工作区），点按钮不该顺带切换。
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void open(workspaceOf(button)) })
-      // 追加到行尾（动作区「…」「＋」之后）：最后一个子元素贴着右边界排，
-      // 动作区在鼠标移入时显形也不会改变它的位置。
-      row.append(button)
+      // 和「…」「＋」排在一起：动作区本来就在鼠标移入时才显形，按钮跟着它一起出现，
+      // 不再占着行首/行尾的位置，也不会压住别的按钮。
+      const actions = actionsOf(row)
+      if (actions !== undefined) {
+        actions.append(button)
+        dump(row, 'actions')
+      } else {
+        // 兜底：贴行尾，并用 order 压到最后，免得主题插件给行内其它段排过序。
+        button.style.order = '99'
+        button.style.margin = '0 0 0 2px'
+        row.append(button)
+        dump(row, 'row-tail')
+      }
     }
+    relabel()
+    hideOwn()
     void syncHidden()
   }
   // 侧栏是 React 渲染的，重渲染会抹掉外部插入的节点和行上的 display，所以持续观察并补回。
@@ -174,4 +278,6 @@ export function apply(ctx: ClientContext): void {
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
   // 侧栏每个工作区组标题行都放一个主会话入口；卸载时断开观察，避免留下活着的监听器。
   ctx.effect(() => installMainSessionEntry(ctx, t), 'dsh-superagent: sidebar main-session entry')
+  // 宿主文档被任何 focus/scrollIntoView 顶走时立刻拉回，免得底部露出一条窗口背景色（「黑下巴」）。
+  ctx.effect(() => keepFrameInPlace(), 'dsh-superagent: keep the host frame from scrolling')
 }

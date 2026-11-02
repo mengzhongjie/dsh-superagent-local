@@ -5,7 +5,7 @@ import type { SetupProblem } from '../../setup.ts'
 import { anyoneAllowed } from '../../policy.ts'
 import type { Store } from '../store.ts'
 import { awaitingEval, dayAgo, newestFirst, ownersOf, snapshot, threadSummary, type ViewHost } from './records.ts'
-import { sourceHealth, type HealthMap } from './sources.ts'
+import { sourceHealth, type HealthMap, type SourceStatusView } from './sources.ts'
 import { ticketRow, type ExecutorLoad } from './tickets.ts'
 import { preview } from './text.ts'
 
@@ -33,9 +33,12 @@ export function evalsHealth(store: Store, now = Date.now()): Health {
 }
 /**
  * Builds the operator overview: active system problems, tickets awaiting human action, executor load, and 24-hour trigger flow.
- * @param setup - Setup problem to surface first (where setup stopped, or a Source paused by setup).
+ * @param setups - Setup problems to surface first: where setup stopped, plus the ones that paused a single Source.
  */
-export function overview(host: ViewHost, health: HealthMap, policyVersionValue: string, load: ExecutorLoad, setup?: SetupProblem) {
+/** A setup problem plus where it bites: the title of the Source that owns it, and whether it stops that Source or everything. */
+export type SetupProblemView = SetupProblem & { title?: { zh: string; en: string }; scope?: 'service' | 'source' }
+export function overview(host: ViewHost, health: HealthMap, policyVersionValue: string, load: ExecutorLoad,
+  setups: readonly SetupProblemView[] = [], statuses: readonly SourceStatusView[] = []) {
   const { store, sources } = host
   const view = snapshot(host)
   const settings = store.settings()
@@ -46,7 +49,7 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
   // Exclude source-owned and policy-sync health entries so only core runtime errors surface as `runtime-error`.
   const sourceParts = new Set(instances.flatMap(instance => sources.kind(instance.kind)?.health ?? []))
   const problems = [
-    ...(setup ? [{ kind: 'setup' as const, ...setup }] : []),
+    ...setups.map(item => ({ kind: 'setup' as const, ...item })),
     ...(running.length ? [] : [{ kind: 'no-source' as const }]),
     // Only allowed senders can originate work, so empty allowlists mean no request can ever become a ticket.
     ...(anyoneAllowed(settings, instances) ? [] : [{ kind: 'no-allowed' as const }]),
@@ -65,12 +68,22 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
       attempts: item.attempts, error: item.error } })),
   ]
   const open = store.tickets.open().sort(newestFirst)
+  // 排队是指派了但还没拿到执行位；其余 working 就是真的在干。
+  const waitingForSlot = (ticket: (typeof open)[number]) => {
+    const stage = ticketStage(ticket)
+    return stage.stage === 'working' && 'action' in stage && stage.action === 'queued'
+  }
   const stats = Object.values(store.read.triggerStats(since))
   const received = stats.reduce((sum, item) => sum + item.received, 0), filtered = stats.reduce((sum, item) => sum + item.filtered, 0)
   const judgement = store.read.flow(since)
   return {
     problems,
+    // 来源整行都给前端：仪表盘要画在线情况、今日收到与被过滤的数量。
+    sources: statuses,
     person: open.filter(ticket => ticketStage(ticket).stage === 'person').map(ticket => ticketRow(view, ticket)),
+    // 仪表盘按工单摆座位：正在干的坐桌上，排队等座的站在旁边。
+    working: open.filter(ticket => ticketStage(ticket).stage === 'working' && !waitingForSlot(ticket)).map(ticket => ticketRow(view, ticket)),
+    queued: open.filter(waitingForSlot).map(ticket => ticketRow(view, ticket)),
     executor: { ...load, maxWorkers: settings.executor.maxWorkers, idle: open.filter(ticket => ticketStage(ticket).stage === 'idle').length },
     flow: { received, filtered, triggers: received - filtered, judged: judgement.judged, accepted: judgement.accepted,
       evaluating: evaluating.length, dropped: store.read.droppedSince(since) },

@@ -1,7 +1,9 @@
 // 本地 Source 的单元测试：消息文本、Trigger 形状、回复投递、实例配置。
 // 这些都不依赖 Cordis 运行时，因此可以直接调纯函数验证。
 import { expect, it, vi } from 'vitest'
-import { OPERATOR_ID, SOURCE, apply, attachmentPath, attachmentRefs, dshKind, dshTrigger, messageText } from '../src/sources/dsh.ts'
+import { sep } from 'node:path'
+import { ATTACHMENTS_ROOT, OPERATOR_ID, SOURCE, apply, attachmentPath, attachmentRefs, dshKind, dshTrigger, isAttachmentId,
+  messageText } from '../src/sources/dsh.ts'
 import type { OutboundMessage } from '../src/core/index.ts'
 import { startRuntime } from './fixtures/host.ts'
 
@@ -117,6 +119,20 @@ it('extracts attachment references and resolves them to a readable path', () => 
   expect(attachmentRefs([{ type: 'image', attachment: {} }, { type: 'image' }])).toEqual([])
   // 路径按 DSH 附件库约定拼：objects/<id 前两位>/<id>
   expect(attachmentPath('ab12cd')).toMatch(/\/\.dsh\/attachments\/v1\/objects\/ab\/ab12cd$/)
+})
+
+it('refuses attachment ids that are not a plain identifier', () => {
+  // 审计报告的中风险项：id 直接拼进路径，含 .. 或 / 就能指到附件库外面。
+  for (const id of ['../../../../tmp/secret', '../x', 'ab/12', 'ab\\12', '.', '..', '', 'a'.repeat(129)]) {
+    expect(isAttachmentId(id), id).toBe(false)
+    expect(attachmentRefs([{ type: 'image', attachment: { attachmentId: id } }]), id).toEqual([])
+    expect(() => attachmentPath(id), id).toThrow('Invalid DSH attachment id')
+  }
+  // 合法 id 原样放在一级目录下，路径不会越过附件库。
+  const root = ATTACHMENTS_ROOT + sep
+  for (const id of ['ab12', 'ab12cd34', 'FF00', 'A'.repeat(128)]) expect(attachmentPath(id).startsWith(root), id).toBe(true)
+  expect(isAttachmentId(42)).toBe(false)
+  expect(isAttachmentId(undefined)).toBe(false)
 })
 
 it('carries attachments through the Trigger instead of dropping the message', async () => {

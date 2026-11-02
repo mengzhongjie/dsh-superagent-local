@@ -121,6 +121,8 @@ export function saveBarText(t: T, { phase, sent, notice }: DraftState<unknown, u
     case 'merged': return { status: words.merged?.(notice.revision) ?? t('saveMerged') }
     case 'rebasing': return { status: t('saveRebasing') }
   }
+  // 保存中要有独立文案：awaitingRevision 才代表服务端已收下，两者不能都落到“已保存”/“未保存”。
+  if (phase === 'saving') return { status: t('saving') }
   if (phase === 'awaitingRevision') return { status: t(sent?.restarting ? 'savedRestarting' : 'saved') }
   return { status: phase === 'clean' ? t('saved') : words.editing ?? t(notice?.kind === 'restored' ? 'draftRestored' : 'draftKept') }
 }
@@ -179,6 +181,8 @@ export function SaveBar({ state, dirty, busy, words, status, onDiscard, onSave }
 }) {
   const { t } = usePanel()
   const line = saveBarText(t, state, words)
+  // 保存成功后脏态立刻归零，所以只有 editing/saving 这两个状态需要这根条；
+  // “已保存”由 notify 的 toast 播报，不再让条停留，否则它会在别的操作后又冒出来。
   const shown = dirty || busy || !!line.error
   const bar = useRef<HTMLDivElement>(null)
   const block = useRef<HTMLElement | null>(null)
@@ -191,12 +195,13 @@ export function SaveBar({ state, dirty, busy, words, status, onDiscard, onSave }
   }, [shown])
   if (!shown) return null
   const leave = (next: Element | null) => { if (next && !bar.current?.contains(next)) focused.current = false }
-  return <div ref={bar} className="dt-savebar" onFocus={() => { focused.current = true }}
+  return <div ref={bar} className="dt-savebar" data-state={dirty || busy ? 'editing' : 'settled'}
+    aria-busy={busy || undefined} onFocus={() => { focused.current = true }}
     onBlur={event => leave(event.relatedTarget as Element | null)}>
     {line.error ? <p className="dt-error dt-clamp" role="alert">{line.error}</p>
       : <p className="dt-hint" aria-live="polite">{status ?? line.status}</p>}
     <Button variant="ghost" size="sm" disabled={!dirty || busy} onClick={onDiscard}>{t('discard')}</Button>
-    <Button variant="primary" size="sm" disabled={!dirty || busy} {...onSave ? { onClick: onSave } : { type: 'submit' as const }}>
+    <Button variant="primary" size="sm" busy={busy} disabled={!dirty} {...onSave ? { onClick: onSave } : { type: 'submit' as const }}>
       {t('save')}
     </Button>
   </div>

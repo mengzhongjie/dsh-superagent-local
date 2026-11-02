@@ -7,18 +7,30 @@ import type { SetupProblem } from '../setup.ts'
 import type { Family, Key } from '../kv.ts'
 import { fill } from '../infra/text.ts'
 
-/** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
+/**
+ * Fixed English health templates (`{name}` placeholders) for codes core code reports.
+ *
+ * 扩展点：Source kind 自己的健康码用不着改这张表，它把文案表传给 `health()`，并在 `SourceKind.healthCodes`
+ * 里声明面板标签即可。
+ */
 export const HEALTH_TEXT = {
   setupPending: 'Waiting for the deployment check',
   sourceOff: 'Off',
-  feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
-  feishuBotMissing: 'Waiting for the Feishu bot',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
-export type HealthCode = keyof typeof HEALTH_TEXT
-export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode; values?: Record<string, string> }
-export function health(state: Health['state'], code: HealthCode, values: Record<string, string> = {}): Health {
-  return { state, detail: fill(HEALTH_TEXT[code], values), code, ...Object.keys(values).length ? { values } : {} }
+/** A health code: a core one, or any code a Source kind declares in its own table. */
+export type HealthCode = keyof typeof HEALTH_TEXT | (string & {})
+export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode; values?: Record<string, string>
+  /** Panel label of `code` in both interface languages, taken from the declaring kind; the panel localizes this instead of its own table. */
+  label?: { zh: string; en: string } }
+/**
+ * Builds a health report.
+ * @param text English templates for the codes this reporter uses; defaults to the core table, so a Source kind
+ *   passes its own and needs no entry in `HEALTH_TEXT`.
+ */
+export function health(state: Health['state'], code: HealthCode, values: Record<string, string> = {},
+  text: Record<string, string> = HEALTH_TEXT): Health {
+  return { state, detail: fill(text[code] ?? code, values), code, ...Object.keys(values).length ? { values } : {} }
 }
 export interface SourceHost {
   readonly sources: SourceRegistry

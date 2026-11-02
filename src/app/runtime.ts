@@ -170,7 +170,7 @@ export class Runtime extends Service implements SourceHost {
           // Notify the ticket's conversations whenever it ends via a pull request.
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
-            for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
+            for (const message of pullEndNotices(ended, request, setup.deployment.repositories[0] ?? '')) outbox.send(message)
           }
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
@@ -180,7 +180,7 @@ export class Runtime extends Service implements SourceHost {
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
-        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
+        get setupProblem() { return setup.problem }, get sourceProblems() { return setup.problems }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
@@ -200,11 +200,11 @@ export class Runtime extends Service implements SourceHost {
   get deployment(): Deployment { return this.setup.deployment }
   configured(): boolean { return this.setup.configured() }
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
-  /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
-  get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
+  /** Setup problems that pause one Source, keyed by its setup place (the Source kind ID). */
+  get sourceProblems(): Record<string, SetupProblem> { return this.setup.problems }
   links(): LinkTarget {
     const resolved = this.setup.configured() ? this.setup.deployment : undefined
-    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
+    const links = resolved ? { repositories: resolved.repositories, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
     return channel => this.sources.link(channel, links)
   }
   ticketEnvironment(ticket: Ticket): Variable[] {
@@ -340,9 +340,13 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
-    await this.sessions.ensure(this.masterId, this.machine.workspace || this.machine.stateDir, this.machine.sessionTitle, 'orchestrator')
+    // 默认主子必须有落点：配置了 workspace 就用它；否则用 DSH 里已有的第一个工作区。
+    // 绝不能退回 stateDir——那会把 ~/.dsh/state/superagent 注册成一个工作区，侧栏就多出一行「superagent」。
+    const owned = this.ctx.workspaceRegistry.list?.().find(item => !item.path.startsWith(this.machine.stateDir))?.path
+    const directory = this.machine.workspace || owned || this.machine.stateDir
+    await this.sessions.ensure(this.masterId, directory, this.machine.sessionTitle, 'orchestrator')
     // 默认那个工作区也照同一套记一笔：★ 点在它上面时找回的是这一条，而不是又开一条。
-    const home = await this.ctx.workspaceRegistry.resolveByPath(this.machine.workspace || this.machine.stateDir)
+    const home = await this.ctx.workspaceRegistry.resolveByPath(directory).catch(() => undefined)
     if (home !== undefined) this.remember(home.id, this.masterId)
     // DSH 的侧栏只列出有过消息的会话；主会话刚建好是空的，会因此不在列表里出现。
     // 给他留一条开场说明：既让它可见，也顺带告诉操作者该怎么用。requestId 固定，重启不会重复发。
@@ -363,7 +367,7 @@ export class Runtime extends Service implements SourceHost {
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
       masterIds: () => runtime.masterIds(), masterFor: workspaceId => runtime.masterFor(workspaceId),
       get deployment() { return setup.deployment },
-      get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
+      get setupProblem() { return setup.problem }, get sourceProblems() { return setup.problems },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }

@@ -245,13 +245,15 @@ export async function startRuntime(seed?: (store: Store) => void) {
       create: async (cwd: string) => ({ id: cwd, path: cwd, title: cwd, attachSession: async () => {} }),
       get: (id: string) => ({ id, path: id, title: id }),
       resolveByPath: async (path: string) => ({ id: path, path, title: path }),
+      // 默认主子会先问「DSH 里已有哪些工作区」，夹具给一个空列表让它落到 stateDir 以外。
+      list: () => [],
     }, permissionPresets: { set: () => {} }, subprocess, webServer,
     jobs: jobs.service, subagents: subagents.service }
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const seeded = new Store(join(directory, 'orchestrator.sqlite'))
-  const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
+  const sources = { github: { enabled: true, config: { repositories: [{ repository: 'acme/widgets' }], cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()

@@ -50,7 +50,16 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     { key: 'linkTimeoutMs', type: 'number', advanced: true, min: 1, max: 90000, label: { zh: '原消息链接的查询时限 / 毫秒', en: 'Original message link time limit / ms' },
       hint: { zh: '查询原消息链接最多等待的时间；超时后智能体改为直接读取原消息。', en: 'How long to wait for an original message\'s link; after that, agents read the message itself.' } },
   ],
+  setupFields: Object.keys(FeishuBotSchema.shape),
   health: ['feishu', 'history'],
+  /** 面板标签与稳态语义（见 SourceKind.healthCodes）：这几个码都照实显示，不在启用期间伪装成“启动中”。 */
+  healthCodes: {
+    feishuCliUnset: { mode: 'steady', label: { zh: '来源已打开，还没有设置机器人的 lark-cli', en: 'The Source is on, and its bot lark-cli is not set' } },
+    feishuBotMissing: { mode: 'steady', label: { zh: '等待飞书机器人', en: 'Waiting for the Feishu bot' } },
+    pollFailures: { mode: 'steady', label: { zh: '连续 {count} 次轮询失败，最近一次：{error}', en: '{count} consecutive failed polls; last: {error}' } },
+    setupPending: { label: { zh: '等待部署检查', en: 'Waiting for the deployment check' } },
+    sourceOff: { label: { zh: '已关闭', en: 'Off' } },
+  },
   scope({ meta }, config) {
     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)

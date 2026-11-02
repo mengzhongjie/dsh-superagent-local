@@ -51,11 +51,32 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
     strokeLinejoin="round" aria-hidden="true"><path d={ICON_PATHS[name]} /></svg>
 }
 
-type ButtonProps = { variant?: 'primary' | 'ghost' | 'outline'; size?: 'md' | 'sm'; icon?: ReactNode; className?: string }
+// danger 是破坏性操作（删除、结束派工）专用的第三档强调；busy 表达“请求在途”，
+// 让调用方不必各自把 disabled 和文案拼成两种写法。
+type ButtonProps = { variant?: 'primary' | 'ghost' | 'outline' | 'danger'; size?: 'md' | 'sm'; icon?: ReactNode
+  className?: string; busy?: boolean }
   & ButtonHTMLAttributes<HTMLButtonElement>
-export function Button({ variant = 'ghost', size = 'md', icon, className, children, type = 'button', ...rest }: ButtonProps) {
-  return <button type={type} className={cx('dt-btn', `dt-btn-${variant}`, `dt-btn-${size}`, className)} {...rest}>
+export function Button({ variant = 'ghost', size = 'md', icon, className, children, type = 'button', busy, disabled, ...rest }: ButtonProps) {
+  // busy 同时做两件事：disabled 防重复提交，aria-busy 让读屏读“忙碌中”而不是“不可用”；
+  // 两者分开是因为禁用是视觉/交互结果，aria-busy 才是语义。
+  return <button type={type} disabled={disabled === true || busy === true} aria-busy={busy || undefined}
+    className={cx('dt-btn', `dt-btn-${variant}`, `dt-btn-${size}`, busy && 'dt-btn-busy', className)} {...rest}>
     {icon !== undefined && <span className="dt-btn-icon">{icon}</span>}{children}
+  </button>
+}
+
+/**
+ * 纯图标按钮：label 是必填的可访问名字，同时兜底成 title，
+ * 避免出现“只有一个图标、读屏和悬停都没有说明”的按钮。
+ */
+export function IconButton({ icon, label, title, tone = 'plain', size = 'md', disabled, onClick }: {
+  icon: IconName; label: string; title?: string; tone?: 'plain' | 'danger'; size?: 'sm' | 'md'
+  disabled?: boolean; onClick: () => void
+}) {
+  // 视觉档位用 data-* 而不是新造类名，CSS 只需维护 .dt-icon-btn 一套规则。
+  return <button type="button" className="dt-icon-btn" data-tone={tone} data-size={size} aria-label={label}
+    title={title ?? label} disabled={disabled} onClick={onClick}>
+    <Icon name={icon} size={size === 'sm' ? 14 : 16} />
   </button>
 }
 
@@ -69,9 +90,12 @@ export function Pill({ active, onClick, children }: { active: boolean; onClick: 
     onClick={onClick}>{children}</button>
 }
 
-function walk<V extends string>(event: KeyboardEvent, values: readonly V[], value: V, onChange: (next: V) => void) {
+function walk<V extends string>(event: KeyboardEvent, values: readonly V[], value: V, onChange: (next: V) => void, vertical = false) {
   const index = values.indexOf(value)
-  const steps: Record<string, number> = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: values.length - 1 }
+  // 竖排的标签页用上下方向键换项，横排的用左右；Home/End 两种都保留。
+  const steps: Record<string, number> = vertical
+    ? { ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: values.length - 1 }
+    : { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: values.length - 1 }
   const next = steps[event.key]
   if (next === undefined) return
   event.preventDefault()
@@ -82,9 +106,16 @@ function walk<V extends string>(event: KeyboardEvent, values: readonly V[], valu
 }
 interface TabItem<V extends string> { value: V; label: string; id: string; panelId: string }
 /** Page-level tab bar that re-emits `onChange` when clicking the active tab so callers can reset to the tab root. */
-export function SegmentedTabs<V extends string>({ items, value, onChange, label, className }: {
+export function SegmentedTabs<V extends string>({ items, value, onChange, label, className, orientation = 'horizontal',
+  variant = 'tabs' }: {
   items: readonly TabItem<V>[]; value: V; onChange: (next: V) => void; label: string; className?: string
+  orientation?: 'horizontal' | 'vertical'
+  /** tabs 是页面级标签（药丸底），subtabs 是页内分区（下划线），bar 是顶部一级导航（下划线 + 徽标）。
+   *  三者的视觉层级不同，不要混用。 */
+  variant?: 'tabs' | 'subtabs' | 'bar'
 }) {
+  const subtabs = variant === 'subtabs'
+  const bar = variant === 'bar'
   const list = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState<'start' | 'end' | 'both'>()
   const measure = useCallback(() => {
@@ -102,19 +133,25 @@ export function SegmentedTabs<V extends string>({ items, value, onChange, label,
     for (const tab of list.current.children) observer.observe(tab)
     return () => { observer.disconnect() }
   }, [measure, items.length])
-  return <div ref={list} role="tablist" aria-label={label} className={cx('dt-tabs', className)} data-more={more} onScroll={measure}
-    style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }} onKeyDown={event => walk(event,
-      items.map(item => item.value), value, onChange)}>
+  return <div ref={list} role="tablist" aria-label={label} aria-orientation={orientation}
+    className={cx(bar ? 'dt-navbar' : subtabs ? 'dt-subtabs' : 'dt-tabs', className)}
+    data-more={more} data-orientation={orientation} onScroll={measure}
+    /* bar 变体按内容自适应宽度（可横向滚动），等分栅格只给 tabs/subtabs。 */
+    style={bar ? undefined : { gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }} onKeyDown={event => walk(event,
+      items.map(item => item.value), value, onChange, orientation === 'vertical')}>
     {items.map(item => <button key={item.value} type="button" role="tab" id={item.id} aria-controls={item.panelId}
       aria-selected={item.value === value}
-      tabIndex={item.value === value ? 0 : -1} className="dt-tab" onClick={() => onChange(item.value)}>{item.label}</button>)}
+      tabIndex={item.value === value ? 0 : -1} className={bar ? 'dt-tabbar-item' : subtabs ? 'dt-subtab' : 'dt-tab'}
+      onClick={() => onChange(item.value)}>{item.label}</button>)}
   </div>
 }
-export function SegmentedControl<V extends string>({ options, value, onChange, label, disabled, className }: {
+export function SegmentedControl<V extends string>({ options, value, onChange, label, disabled, className, id }: {
   options: readonly { value: V; label: string; title?: string }[]; value: V; onChange: (next: V) => void; label: string; disabled?: boolean
-  className?: string
+  className?: string; id?: string
 }) {
-  return <div role="tablist" aria-label={label} className={cx('dt-segmented', className)}
+  // id 必须挂在 role="tablist" 的容器上：页面用 aria-labelledby / 锚点指向它，
+  // 再包一层 div 只会多出一层无意义节点。
+  return <div id={id} role="tablist" aria-label={label} className={cx('dt-segmented', className)}
     style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
     onKeyDown={event => { if (!disabled) walk(event, options.map(option => option.value), value, onChange) }}>
     {options.map(option => <button key={option.value} type="button" role="tab" aria-selected={option.value === value}

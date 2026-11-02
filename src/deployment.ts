@@ -7,13 +7,17 @@ import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
+import { homedir } from 'node:os'
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
-const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
+const absolute = (description: string) => s.string().pattern(/^(?:[\\/]|[A-Za-z]:[\\/])/).description(`${description} Absolute path.`)
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
+/** stateDir 有默认值：profile 的 patch 里漏写 config 时插件仍能启动，不会整块报 invalid config 让面板显示「没有响应」。 */
+const defaultStateDir = (): string => join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'state', 'superagent')
 export const Config = s.object({
-  stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
+  stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.')
+    .default(defaultStateDir()),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -50,16 +54,20 @@ export function machineOf(config: DeploymentConfig): Machine {
   return { stateDir, workspace, sessionTitle, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
+/** 一个要监听的仓库，写作 owner/name；面板里就是列表中的一行。 */
+export const GithubRepositorySchema = z.object({
+  repository: z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
+}).strict()
+/** 智能体的 GitHub 账号与要监听的仓库列表；列表为空表示本地工作区模式，不访问 GitHub。 */
 export const GithubAccountsSchema = z.object({
-  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  repositories: z.array(GithubRepositorySchema).default([]),
   cli: z.string().trim().default(''),
 })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
-
 export interface Deployment extends Machine {
-  repository: string
+  /** 监听并推送的仓库，canonical 名字（owner/name）；空数组表示本地工作区模式。 */
+  repositories: string[]
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
 }
@@ -91,28 +99,33 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   const result = schema.safeParse(value)
   return result.success ? result.data : undefined
 }
-/** Verify the agent's GitHub CLI identity and push access to the configured repository. */
+/** Verify the agent's GitHub CLI identity and push access to every configured repository. */
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
-  const remote = accounts.repository
+  // 同一个仓库可能被写进两行；按 owner/name 去重后再逐个检查。
+  const wanted = [...new Set(accounts.repositories.map(row => row.repository))]
   // 本地工作区模式：没有配置 GitHub 仓库时，不访问 GitHub，工单直接在工作区目录里执行。
   // 这类部署照样要有 stateDir 与 worker 环境，所以仍返回一个 Deployment，只是仓库与账户为空。
-  if (!remote) return { ...machine, repository: '', github: { cli: '', login: '', noreply: '' } }
+  if (!wanted.length) return { ...machine, repositories: [], github: { cli: '', login: '', noreply: '' } }
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
   const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
   const agent = parsed(GithubUser, text)
   if (!agent) throw new SetupError('agentCliNoAccount')
-  // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
-    throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
-  }))
-  if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
-  const repository = access.name
-  if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  // 每个仓库单独检查：canonical 名字（仓库改名后仍能匹配通知）与推送权限，第一个失败的仓库就报告出来。
+  const repositories: string[] = []
+  for (const remote of wanted) {
+    const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
+      throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
+    }))
+    if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
+    if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository: remote })
+    repositories.push(access.name)
+  }
+  // 两个不同写法可能解析成同一个仓库；换回 canonical 名字后再去重一次。
+  return { ...machine, repositories: [...new Set(repositories)], github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })
@@ -138,4 +151,15 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+/**
+ * Account probes for Source settings cards, keyed by Source kind id: saving a `source:<id>` block runs the probe
+ * registered here before the settings are stored.
+ *
+ * 扩展点：一个来源需要在保存卡片前验证 CLI 账号，就在这里登记一行；不登记等于保存时不做账号检查。
+ */
+export const ACCOUNT_PROBES: Record<string, (machine: Machine, config: unknown, probe: Probe) => Promise<unknown>> = {
+  github: (machine, config, probe) => resolveDeployment(machine, config, probe),
+  feishu: (machine, config, probe) => resolveFeishuBot(machine, config, probe),
 }

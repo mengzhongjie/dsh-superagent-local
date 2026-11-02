@@ -1,4 +1,4 @@
-import { shortTitle } from '../src/executor/dsh.ts'
+import { shortTitle, ticketWorktreeName } from '../src/executor/dsh.ts'
 /** 会话归属的两条硬规则：worker 目录不漂移，点击失败不冒充成功。 */
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'

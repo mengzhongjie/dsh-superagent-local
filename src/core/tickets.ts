@@ -258,6 +258,8 @@ export class Tickets extends EnginePart {
     // Only a human's message resumes an ended ticket; bot/CI triggers wait alongside inputs from before the ticket ended.
     const first = ticket.undelivered.map(id => ticket.inputs.find(input => input.id === id)).find(input => input?.kind === 'trigger' && input.human)
     if (first?.kind !== 'trigger') return
+    // 本地操作者的消息自成一张工单：它能叫醒正在跑的那张，但不复活已经结束的那张。
+    if (this.repo.triggers.get(first.triggerId)?.meta.newTicket === true) return
     const at = this.now()
     delete ticket.ended; ticket.updatedAt = at
     const assignment = this.newAssignment(ticket)
