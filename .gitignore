@@ -5,3 +5,4 @@ lib/
 coverage/
 *.tgz
 .DS_Store
+.dsh-project-memory/

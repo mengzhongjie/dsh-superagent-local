@@ -32,6 +32,20 @@ workspace's directory; the main Session never edits files itself.
 
 It is also a way of working with an agent: **take as little human attention as possible, and give as much value as possible.** An agent that can act for a whole team can also waste a whole team's attention, so it acts only when asked or when a rule the team wrote allows it, and speaks only when someone must act or can use a result. [docs/000-philosophy.md](docs/000-philosophy.md) explains the principle and what it asks of the operator.
 
+## Install
+
+This bundle is not published to npm. Install it from the repository or from a prebuilt tarball:
+
+```sh
+# from source: the `prepare` script builds lib/ during install
+dsh plugin add github:mengzhongjie/dsh-superagent-local
+
+# or a prebuilt tarball from the latest release
+dsh plugin add https://github.com/mengzhongjie/dsh-superagent-local/releases/download/v0.2.1/dsh-superagent-0.2.1.tgz
+```
+
+Then follow [SETUP.md](SETUP.md) for the profile configuration and the first start.
+
 ## Setup
 
 Setup has many steps, so an agent does it with you. Ask your coding agent:
@@ -57,8 +71,8 @@ Read the numbered documents in order; each builds only on the ones before it.
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build. `pnpm pack` produces the installable
-bundle used by `dsh plugin add`. A fresh clone has no `lib/` (it is built, not committed), so run
-`pnpm install && pnpm build` first.
+bundle used by `dsh plugin add`. A fresh clone has no `lib/` (it is built, not committed); the
+`prepare` script builds it, so `pnpm install` is enough before starting the harness from source.
 
 ## License
 
