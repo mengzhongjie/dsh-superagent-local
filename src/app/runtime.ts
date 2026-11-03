@@ -10,7 +10,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-subprocess'
-import { mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
@@ -185,7 +185,12 @@ export class Runtime extends Service implements SourceHost {
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
-      this.ready = this.initialize()
+      this.breadcrumb('constructed')
+      this.ready = this.initialize().then(() => this.breadcrumb('ready'), error => {
+        // 激活失败时把原因留在 stateDir 里：宿主不会把插件错误写到任何可查的日志，只有这一份线索。
+        this.breadcrumb(`initialize failed: ${String(error)}`)
+        throw error
+      })
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
       try { opened?.close() } finally { release() }
@@ -331,6 +336,47 @@ export class Runtime extends Service implements SourceHost {
   private closing(): boolean { return this.closingFlag }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
   private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
+  /**
+   * 默认主子的落点：配置值 → DSH 里第一个「存在、且不在 stateDir 下」的工作区 → stateDir 兜底。
+   * 绝不能优先退回 stateDir：那会把 ~/.dsh/state/superagent 注册成一个工作区，侧栏就多出一行「superagent」。
+   */
+  private masterDirectory(): string {
+    if (this.machine.workspace) return this.machine.workspace
+    try {
+      const entries = (this.ctx.workspaceRegistry.list?.() ?? []) as unknown as ReadonlyArray<{ path?: unknown }>
+      for (const entry of entries) {
+        const path = entry?.path
+        if (typeof path !== 'string' || path === '') continue
+        if (path.startsWith(this.machine.stateDir)) continue
+        if (existsSync(path)) return path
+      }
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not read the workspace list: %s', String(error))
+    }
+    return this.machine.stateDir
+  }
+
+  /** 按目录找工作区记录；这个 DSH 版本没有该接口或找不到时返回 undefined。 */
+  private async workspaceRecordOf(path: string): Promise<{ id: string } | undefined> {
+    const registry = this.ctx.workspaceRegistry as unknown as { resolveByPath?: unknown }
+    if (typeof registry?.resolveByPath !== 'function') return undefined
+    try {
+      return await this.ctx.workspaceRegistry.resolveByPath(path)
+    } catch { return undefined }
+  }
+
+  /**
+   * 激活过程的最后一步记录，写进 `<stateDir>/diagnostics/activation.log`。
+   * 桌面端不会把插件错误写到任何日志里，出问题时这是唯一能看的地方；写入失败一律忽略，不能反过来影响启动。
+   */
+  private breadcrumb(step: string): void {
+    try {
+      const directory = join(this.machine.stateDir, 'diagnostics')
+      mkdirSync(directory, { recursive: true })
+      appendFileSync(join(directory, 'activation.log'), `${new Date().toISOString()} ${step}\n`)
+    } catch { /* 诊断失败不影响启动 */ }
+  }
+
   private async initialize(): Promise<void> {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
@@ -340,14 +386,23 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
-    // 默认主子必须有落点：配置了 workspace 就用它；否则用 DSH 里已有的第一个工作区。
-    // 绝不能退回 stateDir——那会把 ~/.dsh/state/superagent 注册成一个工作区，侧栏就多出一行「superagent」。
-    const owned = this.ctx.workspaceRegistry.list?.().find(item => !item.path.startsWith(this.machine.stateDir))?.path
-    const directory = this.machine.workspace || owned || this.machine.stateDir
-    await this.sessions.ensure(this.masterId, directory, this.machine.sessionTitle, 'orchestrator')
-    // 默认那个工作区也照同一套记一笔：★ 点在它上面时找回的是这一条，而不是又开一条。
-    const home = await this.ctx.workspaceRegistry.resolveByPath(directory).catch(() => undefined)
-    if (home !== undefined) this.remember(home.id, this.masterId)
+    // 主子的落点选择和创建都围在 try 里：workspaceRegistry 的形状在不同 DSH 版本里不完全一样，
+    // 任何一次读取失手都只能降级（回退 stateDir），不能让整个插件激活失败、面板一片「没有响应」。
+    this.breadcrumb('initializing')
+    const directory = this.masterDirectory()
+    try {
+      this.breadcrumb(`master: ${directory}`)
+      await this.sessions.ensure(this.masterId, directory, this.machine.sessionTitle, 'orchestrator')
+      // 默认那个工作区也照同一套记一笔：M 气泡点在它上面时找回的是这一条，而不是又开一条。
+      const home = await this.workspaceRecordOf(directory)
+      if (home !== undefined) this.remember(home.id, this.masterId)
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not place its master session in %s: %s', directory, String(error))
+      if (directory !== this.machine.stateDir) {
+        await this.sessions.ensure(this.masterId, this.machine.stateDir, this.machine.sessionTitle, 'orchestrator')
+          .catch(fallback => this.ctx.logger.warn('dsh-superagent could not place its master session in the state directory either: %s', String(fallback)))
+      }
+    }
     // DSH 的侧栏只列出有过消息的会话；主会话刚建好是空的，会因此不在列表里出现。
     // 给他留一条开场说明：既让它可见，也顺带告诉操作者该怎么用。requestId 固定，重启不会重复发。
     await this.sessions.prompt(this.masterId, 'main-session-ready',

@@ -117,22 +117,11 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
    */
   const ours = (id: string): boolean => id.startsWith('worker-') || id.startsWith('orchestrator-')
   const rowId = (row: Element): string => (row.getAttribute('data-row-key') ?? '').replace(/^session:/, '')
-  /** 一个组行下面挂着哪些会话行：优先找子树，宿主把行铺平当兄弟时退回向后扫描。 */
-  const sessionsOf = (row: HTMLElement): HTMLElement[] => {
-    const inside = [...row.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')]
-    if (inside.length > 0) return inside
-    const found: HTMLElement[] = []
-    for (let node = row.nextElementSibling; node !== null; node = node.nextElementSibling) {
-      const key = node.getAttribute('data-row-key') ?? ''
-      if (key.startsWith('workspace:')) break
-      if (key.startsWith('session:')) found.push(node as HTMLElement)
-      else found.push(...[...node.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')])
-    }
-    return found
-  }
   /**
-   * 收起插件自己的会话行；一个组里全是这种行时，连组行一起收起来。
-   * 只收「整组都是我们的」的组：用户自己的分组哪怕只多一条真会话，原样保留。
+   * 收起插件自己的会话行，以及状态目录那一个伪工作区行。
+   *
+   * 组行一律保留：一个组名下只有主会话或 worker 会话，并不说明这一行没用——人的工作区本来
+   * 就可能只挂一条主会话。连组行一起藏会把入口按钮（M 气泡）也带走，侧栏看起来就像工作区蒸发。
    */
   const hideOwn = () => {
     for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')) {
@@ -141,12 +130,9 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
     }
     for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="workspace:"]')) {
       // 状态目录本身（~/.dsh/state/superagent）会被宿主当成一个「工作区」列出来，标题就是目录名；
-      // 它只是插件放库和诊断文件的地方，不是人的工作区，所以直接收起来。
+      // 它只是插件放库和诊断文件的地方，不是人的工作区，所以只收这一行。
       const label = (row.textContent ?? '').trim()
-      if (label === 'superagent') { if (row.style.display !== 'none') row.style.display = 'none'; continue }
-      const sessions = sessionsOf(row)
-      if (sessions.length === 0 || !sessions.every(session => ours(rowId(session)))) continue
-      if (row.style.display !== 'none') row.style.display = 'none'
+      if (label === 'superagent' && row.style.display !== 'none') row.style.display = 'none'
     }
   }
   let hidden: string[] = []
