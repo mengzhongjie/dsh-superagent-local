@@ -11,48 +11,83 @@ import { settingsRoute } from './route.ts'
 import { DecisionLine } from './rows.tsx'
 import { decisionMark } from './marks.ts'
 import { ConfigHistory, Field, Fields, ModelField, SourceField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
-import { errorText, localized, valueLabel, when } from './text.ts'
-import { Card, Empty, Hint, LabelValue, ListSection, LoopTrack, PageHead, Section, Toolbar } from './widgets.tsx'
+import { errorText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
+import { Card, Empty, Hint, LabelValue, ListSection, PageHead, Section, StageMark, Toolbar, When } from './widgets.tsx'
 
 /**
- * 决策闭环样例：用列表里最新的一条决策还原「触发 → 规则 → 结论 → 工单 → 回流」。
- * 每个状态的取值都来自这条决策自身（triggerIds、rules.matched、outcome、ticketId、strength），
- * 不做跨记录聚合，也不写死计数；能点进对应页面的步骤才挂 onSelect。
+ * 指标条：这段时间内各档判定的数量。
+ * 数字来自服务端的 `summary`（按窗口统计全部 kind），所以切换筛选时它不变——指标回答「判定健不健康」，
+ * 列表回答「具体是哪几条」，两者职责分开。
  */
-function DecisionLoop({ decision }: { decision: DecisionRow }) {
+function DecisionMetrics({ total, byKind }: { total: number; byKind: Record<string, number> }) {
+  const { t } = usePanel()
+  const count = (kinds: string[]) => kinds.reduce((sum, kind) => sum + (byKind[kind] ?? 0), 0)
+  const tile = (label: string, value: number) => <div className="dt-metric">
+    <span className="dt-metric-label">{label}</span><span className="dt-metric-value">{value}</span>
+  </div>
+  return <div className="dt-metrics" role="group" aria-label={t('evalMetricsLabel')}>
+    {tile(t('evalDecided'), total)}
+    {tile(t('decisionFilter.work'), count(['accept', 'reopen']))}
+    {tile(t('decisionFilter.stop'), count(['stop']))}
+    {tile(t('decisionFilter.ignore'), count(['ignore']))}
+    {tile(t('decisionFilter.unavailable'), count(['unavailable']))}
+  </div>
+}
+
+/**
+ * 右栏：把一条判定拆开——它是什么、为什么、命中了哪些规则、送进判定的是什么、判定之后发生了什么。
+ * 取的都是 `DecisionRow` 已有的字段，不额外请求。
+ */
+function DecisionDetail({ decision }: { decision: DecisionRow }) {
   const { t, navigate } = usePanel()
   const mark = decisionMark(t, decision.outcome)
-  const hits = decision.rules.filter(rule => rule.matched).length
-  const total = decision.rules.length
-  return <Card title={t('decisionLoop')} hint={t('loopHint')}>
-    <LoopTrack label={t('loopTitle')} steps={[
-      // 触发：这条决策由几条触发引起；0 条说明触发还没到达，闭环未开始。
-      { label: t('flowTriggeredLabel'), value: decision.triggerIds.length, state: decision.triggerIds.length ? 'done' : 'pending' },
-      // 规则：命中数 / 参与判定的规则数，全部未命中时这一步仍是未完成。
-      { label: t('rules'), value: hits + '/' + total, state: total > 0 && hits > 0 ? 'done' : 'pending',
-        onSelect: () => navigate(settingsRoute('eval')) },
-      // 结论：这条决策真实产生的结论文案，闭环的当前位置。
-      { label: t('flowDecidedLabel'), value: mark.label, state: 'current' },
-      // 工单：有 ticketId 才表示决策已落到具体工单，可点进工单详情。
-      { label: t('flowTickedLabel'), value: decision.ticketId ? decision.ticketTitle ?? t('loopDone') : t('loopPending'),
-        state: decision.ticketId ? 'done' : 'pending',
-        ...decision.ticketId ? { onSelect: () => navigate({ page: 'execution', id: decision.ticketId! }) } : {} },
-      // 回流：结论写入决策日志并回到策略侧，依据强度说明这次判定的来源。
-      { label: t('flowReturnedLabel'), value: valueLabel(t, 'strength', decision.strength), state: 'done',
-        onSelect: () => navigate(settingsRoute('eval')) },
-    ]} />
+  const preview = readableMarkers(t, decision.preview)
+  const matched = decision.rules.filter(rule => rule.matched)
+  const title = decision.ticketTitle ?? (decision.threadTitle ? readableMarkers(t, decision.threadTitle) : preview || t('empty'))
+  return <Card className="dt-detail-card" title={t('evalDetailTitle')} hint={t('evalDetailHint')}>
+    <div className="dt-detail-head">
+      <StageMark state={mark.dot} icon={mark.icon} label={mark.label} />
+      <When at={decision.at} />
+    </div>
+    <p className="dt-detail-title">{title}</p>
+    {/* 判定理由：完整文案在这里展开，行内只显示标签。 */}
+    {decision.reason && <blockquote className="dt-detail-quote">{reasonLabel(t, decision.reason)}</blockquote>}
+    {matched.length > 0 && <div className="dt-detail-block">
+      <span className="dt-detail-label">{t('evalRuleHits')}</span>
+      <ul className="dt-detail-rules">{matched.map((rule, index) => <li key={index}>
+        <span className="dt-chip">{rule.name}</span>
+        {rule.reason && <span className="dt-line-text">{localized(t, rule.reason)}</span>}
+      </li>)}</ul>
+    </div>}
+    <div className="dt-detail-block">
+      <span className="dt-detail-label">{t('evalContextLabel')}</span>
+      <p className="dt-detail-context">{preview || t('empty')}</p>
+    </div>
+    {/* 判定之后：有工单就进工单页，没有就给回线程的入口，两条路都在右栏底部收口。 */}
+    <div className="dt-actions">
+      {decision.ticketId
+        ? <Button variant="outline" size="sm" onClick={() => navigate({ page: 'execution', id: decision.ticketId! })}>{t('evalOpenTicket')}</Button>
+        : <Button variant="outline" size="sm" onClick={() => navigate({ page: 'trigger', id: decision.thread,
+          query: { trigger: decision.triggerIds[0] ?? '' } })}>{t('evalOpenThread')}</Button>}
+    </div>
   </Card>
 }
 
-export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter; window: '24h' | undefined; paused: boolean }) {
+export function EvalStatus({ filter, window, paused }: {
+  filter: DecisionFilter; window: '24h' | undefined; paused: boolean
+}) {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(30)
+  // 右栏跟随选中的判定；默认显示最新一条，列表刷新后选的还在就继续跟着它。
+  const [chosen, setChosen] = useState<string>()
   const { data, error, reload } = usePoll(() => call('GET decisions', { query: { limit, kind: DECISION_KINDS[filter],
     ...window ? { window } : {} } }), [filter, limit, window])
-  const show = (key: DecisionFilter, last24h: boolean) => navigate({ page: 'eval', query: { ...key === 'work' ? {} : { filter: key },
-    ...last24h ? { window: '24h' } : {} } }, true)
+  const current = data?.items.find(decision => decision.id === chosen) ?? data?.items[0]
+  // 筛选与 24 小时窗口都进路由：换条件是一次导航，刷新/后退都能回到同一屏。
+  const show = (key: DecisionFilter, last24h: boolean) => navigate({ page: 'eval',
+    query: { ...key === 'all' ? {} : { filter: key }, ...last24h ? { window: '24h' as const } : {} } }, true)
   return <>
-    {/* 列表页模板（v2）：页面头（标题 + 说明 + 设置入口）→ 筛选条（Toolbar）→ 列表（ListSection 管四态）。 */}
+    {/* 列表页模板（v2）：页面头（标题 + 说明 + 设置入口）→ 指标条 → 筛选条 → 流水 + 右栏。 */}
     <PageHead back={false} title={t('term.decision')} hint={t('evalStatusIntro')}>
       <Button variant="ghost" size="sm" icon={<Icon name="settings" />}
         onClick={() => navigate(settingsRoute('eval'))}>{t('tab.settings')}</Button>
@@ -61,8 +96,8 @@ export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter;
       {t('evalRecordsPaused')} <button type="button" className="dt-textlink"
         onClick={() => navigate({ page: 'execution' })}>{t('resumeWhere')}</button>
     </p>}
-    {/* 闭环卡只在拿到至少一条决策时渲染：没有数据就没有可展示的闭环样例。 */}
-    {data && data.items.length > 0 && <DecisionLoop decision={data.items[0]!} />}
+    {/* 指标条回答「这段时间判定健不健康」，与筛选无关；没有数据时不渲染，避免一排 0。 */}
+    {data && data.summary.total > 0 && <DecisionMetrics total={data.summary.total} byKind={data.summary.byKind} />}
     {/*
       四态统一交给 ListSection：首次加载的骨架出现在筛选条之前，筛选条只在拿到数据后渲染，
       避免加载途中先闪一排筛选项；空列表仍保留筛选条，用户可以立刻换一个过滤条件。
@@ -78,8 +113,11 @@ export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter;
           {/* 24 小时窗口是可移除的过滤条件，用普通按钮表达「点掉它」；Pill 的 aria-pressed 只表示选中，表达不了移除。 */}
           <Button variant="outline" size="sm" onClick={() => show(filter, false)}>{t('lastDayOnly')}</Button></>}
       </Toolbar>
-      {data && (data.items.length ? <ul className="dt-list">{data.items.map(decision => <DecisionLine key={decision.id}
-        decision={decision} />)}</ul> : <Empty icon="inbox" title={t('emptyList')} hint={t('emptyListHint')} />)}
+      {data && (data.items.length && current ? <div className="dt-detail">
+        <div className="dt-detail-main"><ul className="dt-list">{data.items.map(decision => <DecisionLine key={decision.id}
+          decision={decision} selected={decision.id === current.id} onSelect={() => setChosen(decision.id)} />)}</ul></div>
+        <aside className="dt-detail-aside"><DecisionDetail decision={current} /></aside>
+      </div> : <Empty icon="inbox" title={t('emptyList')} hint={t('emptyListHint')} />)}
     </ListSection>
   </>
 }

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
+import type { LogEntry } from '../../src/app/views/logs.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
@@ -336,8 +337,24 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { removed, thread: params.key, context_delivery: 'injected' }
   } },
   'POST triggers/:id/requeue': { answer: ({ params }) => { server.queued.add(params.id); return { queued: true } } },
+  // 全部日志：三种类型、三种级别各来一条，够面板断言筛选与本地化。
+  'GET logs': { query: ['kind', 'level', 'q', 'window', 'offset', 'limit'], answer: ({ query }) => {
+    const items: LogEntry[] = [
+      { at: '2026-09-22T00:00:03Z', kind: 'decision', level: 'info', text: 'accept', detail: 'explicitRouted',
+        thread: 'feishu:oc_1:om_root', triggerId: 'e1', decisionId: 'd1' },
+      { at: '2026-09-22T00:00:02Z', kind: 'trigger', level: 'info', text: '@bot 修一下', detail: 'feishu',
+        thread: 'feishu:oc_1:om_root', triggerId: 'e1' },
+      { at: '2026-09-22T00:00:01Z', kind: 'ticket', level: 'info', text: '修复回归', detail: 'completed', ticketId: 't1' },
+      { at: '2026-09-22T00:00:00Z', kind: 'reply', level: 'error', text: '回复没发出去', detail: 'channelGone' },
+    ]
+    const kept = items.filter(item => (!query.kind || item.kind === query.kind)
+      && (!query.level || item.level === query.level) && (!query.q || item.text.includes(query.q)))
+    return { items: kept, next_offset: null, total: kept.length }
+  } },
   'GET decisions': { query: ['kind', 'window', 'offset', 'limit'], answer: ({ query }) =>
-    ({ items: query.kind === 'ignore' ? [] : [acceptDecision()], next_offset: null }) },
+    // 指标条与列表分开算：筛选后列表为空时，这段时间的判定分布仍然是那一条（服务端也是这么统计的）。
+    ({ items: query.kind === 'ignore' ? [] : [acceptDecision()], next_offset: null,
+      summary: { total: 1, byKind: { accept: 1 } } }) },
   'POST decisions/:id/dismiss': { answer: ({ params }) => params.id === 'u1' ? { dismissed: true } : refuse(404,
     'Unavailable Eval not found') },
   'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'

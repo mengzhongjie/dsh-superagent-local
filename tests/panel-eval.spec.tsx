@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, openTab } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -33,7 +33,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
       'ou_newperson'); await type(row.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '新人')
   }
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
   await addUser()
@@ -75,7 +75,7 @@ it('keeps the Policy to its rules and each Source\'s part, in that Source\'s own
 
 it('opens the rule list for an invalid field inside it only', async () => {
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   const openRows = () => all('.dt-disclosure[data-open]').length
   await act(async () => { field(zh.evalTimeout).dispatchEvent(new Event('invalid', { bubbles: false })) })
@@ -87,7 +87,7 @@ it('opens the rule list for an invalid field inside it only', async () => {
 
 it('syncs a Source\'s list from where the Source keeps it, but not while a Policy draft is unsaved', async () => {
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect([...all('.dt-part select')[0]!.querySelectorAll('option')].map(option => option.textContent)).toEqual(['不同步', '另一个群', '团队群'])
   await click(find('立即同步', '.dt-part button'))
@@ -101,7 +101,7 @@ it('syncs a Source\'s list from where the Source keeps it, but not while a Polic
 
 it('adds, copies, renames, disables and deletes rules in Policy without touching Eval', async () => {
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   await click(zh.addRule)
   await type(field<HTMLInputElement>(zh.ruleName), '文档')
@@ -118,7 +118,7 @@ it('adds, copies, renames, disables and deletes rules in Policy without touching
 
 it('shows the current Policy version once, explains what makes it up, and opens a Mandate\'s version in the Policy history', async () => {
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   await settle()
   expect(all('.dt-lv')[0]!.textContent).toBe('策略版本 abcdef12')
@@ -212,4 +212,22 @@ it('shows the GitHub Source\'s switches for what it receives across the reposito
   // CI has no sender: its one cell is that of a message off the list that does not mention the agent.
   expect(field('Default branch CI · Not on the list · no mention')).toBeTruthy()
   expect(all('.dt-admission thead th').map(cell => cell.textContent)).toContain(en.admissionAddressed)
+})
+
+it('shows what was decided in the period and the anatomy of the Decision beside the log', async () => {
+  await mount()
+  await openTab(zh['tab.eval'])
+  // 指标条按窗口统计全部判定，和当前筛选无关：五个标签固定，数值来自服务端 summary。
+  expect(all('.dt-metrics .dt-metric-label').map(label => label.textContent)).toEqual([zh.evalDecided,
+    zh['decisionFilter.work'], zh['decisionFilter.stop'], zh['decisionFilter.ignore'], zh['decisionFilter.unavailable']])
+  expect(all('.dt-metrics .dt-metric-value').map(value => value.textContent)).toEqual(['1', '1', '0', '0', '0'])
+  // 右栏是列表当前指向的那条判定的解剖：理由、送进判定的内容、回线程的入口。
+  const aside = all('.dt-detail-aside')[0]!
+  expect(aside.textContent).toContain(zh['reason.explicitRouted'])
+  expect(aside.textContent).toContain('@bot 修一下')
+  expect([...aside.querySelectorAll('button')].map(button => button.textContent)).toContain(zh.evalOpenThread)
+  // 切到「忽略」后列表空了，指标仍然是这段时间的 1 条判定——它回答的是判定健不健康，不是列表长度。
+  await click(all('.dt-pill').find(pill => pill.textContent === zh['decisionFilter.ignore'])!)
+  expect(all('.dt-metrics .dt-metric-value').map(value => value.textContent)).toEqual(['1', '1', '0', '0', '0'])
+  expect(text()).toContain(zh.emptyList)
 })

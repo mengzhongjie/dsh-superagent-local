@@ -9,13 +9,12 @@ import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
+import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, tabOf, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
-import { TriggerStatus } from './trigger.tsx'
 import { ErrorLine, Hint, When } from './widgets.tsx'
 
 export interface AppProps {
@@ -169,17 +168,18 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
-  useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
+  useEffect(() => { document.getElementById(`dt-tab-${tabOf(route)}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route])
   // 等待与失败都复用共享组件：错误走 errorText 并给重试，避免这里自己拼一段不可重试的原文。
   const waiting = error ? <ErrorLine error={errorText(error)} title={t('loadFailed')} onRetry={reload} />
     : <Hint>{t('loading')}</Hint>
   const page = (() => {
     switch (route.page) {
       case 'overview': return <OverviewPage />
-      case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
-        : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
-      case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
+      // 评估页：判定流水 + 右栏解剖，筛选与 24 小时窗口都在路由里。
+      case 'eval': return <EvalStatus filter={route.query?.filter ?? 'all'} window={route.query?.window}
         paused={!!state?.paused} />
+      // 线程详情是评估页的下一层，一级导航仍高亮「评估」。
+      case 'trigger': return <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
         : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
       case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
@@ -187,18 +187,18 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
     }
   })()
   // 面包屑：一级是页面名，详情页再补一段记录类型（具体标题由页面内的 PageHead 给出）。
-  const crumbs: string[] = [t(`tab.${route.page}`)]
+  const crumbs: string[] = [t(`tab.${tabOf(route)}`)]
   if (route.id !== undefined) crumbs.push(routeLabel(t, route))
   return <div className="dt-app">
     <AppBar masterId={state?.masterId} crumbs={crumbs} />
     <div className="dt-navbar-wrap">
-      <SegmentedTabs variant="bar" label={t('pagesLabel')} value={route.page} onChange={openTab}
+      <SegmentedTabs variant="bar" label={t('pagesLabel')} value={tabOf(route)} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
     </div>
     <div className="dt-content">
       {/* 已经有数据时刷新失败：给出可重试的提示，同时不打断下面继续显示的内容。 */}
       {error && state && <ErrorLine error={errorText(error)} title={t('loadFailed')} onRetry={reload} />}
-      <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
+      <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${tabOf(route)}`} className="dt-main">{page}</main>
     </div>
   </div>
 }

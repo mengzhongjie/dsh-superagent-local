@@ -7,10 +7,14 @@ import type { OverviewView } from './views/overview.ts'
 import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
+import type { LogKind, LogLevel, LogListView } from './views/logs.ts'
 import type { TicketListView } from './views/tickets.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
+export const LOG_KINDS: readonly LogKind[] = ['trigger', 'decision', 'ticket', 'reply']
+export const LOG_LEVELS: readonly LogLevel[] = ['info', 'warn', 'error']
+export type { LogKind, LogLevel }
 export type TicketFilter = typeof TICKET_FILTERS[number]
 export type ThreadFilter = typeof THREAD_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
@@ -37,6 +41,8 @@ export interface Api {
   'POST triggers/:id/requeue': { response: { queued: boolean } }
   'GET decisions': { query?: Paged & { kind?: string; window?: '24h' }; response: DecisionListView }
   'POST decisions/:id/dismiss': { response: { dismissed: true } }
+  /** 全部日志：到达、判定、工单开始与结束、没送达的消息，按时间合并成一条流水。 */
+  'GET logs': { query?: Paged & { kind?: string; level?: string; q?: string; window?: '24h' }; response: LogListView }
   'GET tickets': { query?: Paged & { state?: TicketFilter }; response: TicketListView }
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }

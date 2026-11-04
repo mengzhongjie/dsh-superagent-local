@@ -2,14 +2,14 @@
 // The overview.
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, all, find, tab, click, text } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, all, find, tab, click, text, openTab } from './fixtures/panel.tsx'
 import { server, droppedReply, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '触发', '评估', '执行', '设置'])
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '评估', '执行', '设置'])
   // 区块标题现在只含标题与计数，右侧「详情」入口独立在 .dt-section-head，不再拼进标题文本。
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '来源', '过去 24 小时', '执行器'])
   expect(all('.dt-section-head .dt-more-link').map(link => link.textContent)).toEqual([zh.details, zh.details, zh.details])
@@ -78,7 +78,7 @@ it('shows paused processing as a system problem with its resume action, and says
   server.settings = { ...server.settings, paused: true }
   await mount()
   expect(text()).toContain(zh.problemPaused)
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   expect(text()).toContain(zh.evalRecordsPaused)
   await click(zh.resumeWhere)
   expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
@@ -175,7 +175,10 @@ it('shows the whole loop once in the order a message travels, and opens the stag
   // 当前环节跟着真实负载走：有执行中的工单时「执行中」是 current，其余步骤只按有没有数字分 done / pending。
   expect(all('.dt-loop-step[data-state="current"] .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowRunningLabel])
   expect(all('.dt-loop-step[data-state="pending"] .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowEvaluatingLabel])
-  // 每一步都能点进它说的那一页：第 3 步是触发。
+  // 每一步都能点进它说的那一页：第 3 步（触发）没有独立页了，落进设置 › 日志；第 4 步（已评估）进评估页。
   await click(all('.dt-loop-link')[2]!)
-  expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.logs'])
+  await click(tab(zh['tab.overview']))
+  await click(all('.dt-loop-link')[3]!)
+  expect(tab(zh['tab.eval']).getAttribute('aria-selected')).toBe('true')
 })

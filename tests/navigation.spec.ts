@@ -40,21 +40,24 @@ it('does not navigate after the panel unmounts or a newer request supersedes it'
   await expect(navigation).resolves.toBe(false); expect(open).not.toHaveBeenCalled()
 })
 it('reopens the page this tab showed last, and the overview for a route that no longer exists', () => {
-  remember({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })
-  expect(initialLocation()).toEqual({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'overview' }] })
+  remember({ route: { page: 'eval' }, stack: [{ page: 'overview' }] })
+  expect(initialLocation()).toEqual({ route: { page: 'eval' }, stack: [{ page: 'overview' }] })
   // The Eval tab was previously named Policy; a route saved under the old name falls back to overview.
   sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'policy' }, stack: [] }))
   expect(initialLocation()).toEqual({ route: { page: 'overview' }, stack: [] })
   sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'trigger', id: 'github:acme/widgets#1' }, stack: [{ page: 'policy' }, { page: 'trigger' }] }))
-  expect(initialLocation().stack).toEqual([{ page: 'trigger' }])
+  expect(initialLocation().stack).toEqual([{ page: 'eval' }])
   sessionStorage.setItem('dsh-superagent/route', '{')
   expect(initialLocation().route).toEqual({ page: 'overview' })
 })
 it('reads each page a tab remembered with the parameters it takes, and leaves out what it does not know', () => {
-  expect(parseRoute({ page: 'trigger', query: { filter: 'nope', trigger: 'e1' } })).toEqual({ page: 'trigger' })
+  // 旧的「触发」列表页并进日志的触发视图。
+  expect(parseRoute({ page: 'trigger', query: { filter: 'nope', trigger: 'e1' } })).toEqual({ page: 'eval' })
   expect(parseRoute({ page: 'trigger', id: 'github:acme/widgets#1', query: { trigger: 'e1', filter: 'recent' } }))
     .toEqual({ page: 'trigger', id: 'github:acme/widgets#1', query: { trigger: 'e1' } })
-  expect(parseRoute({ page: 'eval', query: { filter: 'stop', window: '7d' } })).toEqual({ page: 'eval', query: { filter: 'stop' } })
+  // 旧的「评估」页并进日志的决策视图。
+  expect(parseRoute({ page: 'eval', query: { filter: 'stop', window: '7d' } }))
+    .toEqual({ page: 'eval', query: { filter: 'stop' } })
   expect(parseRoute({ page: 'execution', id: 5, query: { filter: 'idle' } })).toEqual({ page: 'execution', query: { filter: 'idle' } })
   expect(parseRoute({ page: 'settings', query: { group: 'policy', source: 'feishu' } }))
     .toEqual({ page: 'settings', query: { group: 'source', source: 'feishu' } })

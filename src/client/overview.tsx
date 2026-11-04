@@ -103,14 +103,14 @@ export function OverviewPage() {
     onSelect: () => navigate(route),
   })
   const loopSteps = [
-    step(t('flowReceivedLabel'), data.flow.received, { page: 'trigger', query: { filter: 'recent' } }),
+    step(t('flowReceivedLabel'), data.flow.received, settingsRoute('logs')),
     step(t('flowFilteredLabel'), data.flow.filtered, settingsRoute('source')),
-    step(t('flowTriggeredLabel'), data.flow.triggers, { page: 'trigger' }),
+    step(t('flowTriggeredLabel'), data.flow.triggers, settingsRoute('logs')),
     step(t('flowJudgedLabel'), data.flow.judged, { page: 'eval' }),
-    step(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { window: '24h' } }),
+    step(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { filter: 'work' as const, window: '24h' as const } }),
     step(t('flowRunningLabel'), data.executor.running, { page: 'execution' }, `${data.executor.queued} ${t('queuedLabel')}`,
       stage === 'running'),
-    step(t('flowEvaluatingLabel'), data.flow.evaluating, { page: 'eval', query: { window: '24h' } },
+    step(t('flowEvaluatingLabel'), data.flow.evaluating, { page: 'eval', query: { filter: 'work' as const, window: '24h' as const } },
       undefined, stage === 'evaluating'),
     step(t('flowReturnedLabel'), data.policyVersion, settingsRoute('eval')),
   ]
@@ -154,13 +154,13 @@ export function OverviewPage() {
         </button>
       })}</div>
     </Section>}
-    <Section title={t('lastDay')} action={more({ page: 'trigger', query: { filter: 'recent' } })}>
+    <Section title={t('lastDay')} action={more(settingsRoute('logs'))}>
       {/* Received and evaluated counts operate on Triggers rather than Threads or Decisions, so they do not link to filtered views. */}
       <div className="dt-stats">
         {stat(t('flowReceivedLabel'), data.flow.received)}
         {stat(t('flowFilteredLabel'), data.flow.filtered, data.flow.filtered ? settingsRoute('source') : undefined)}
         {stat(t('flowJudgedLabel'), data.flow.judged)}
-        {stat(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { window: '24h' } })}
+        {stat(t('flowAcceptedLabel'), data.flow.accepted, { page: 'eval', query: { filter: 'work' as const, window: '24h' as const } })}
         {data.flow.dropped > 0 && stat(t('flowDroppedLabel'), data.flow.dropped, settingsRoute('source'))}
       </div>
     </Section>

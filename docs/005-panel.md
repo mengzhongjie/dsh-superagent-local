@@ -12,15 +12,15 @@ Opening the panel answers three questions, in this order:
 
 ## Tabs
 
-The tabs follow the workflow: **Overview**, **Trigger**, **Eval**, **Execution**, and **Settings**. Sources no longer have a tab of their own: Overview shows each Source's state and its last day's counts, and Settings › Source holds their configuration. Until the repositories and the accounts are set up, Overview shows what is missing and links to the relevant setting.
+The tabs follow the work people watch: **Overview**, **Eval**, **Execution**, and **Settings**. Eval is the Decision log, because what was decided and why is the question this panel exists to answer; its log opens on **All** Decisions so the period is visible at once, and the pills narrow it rather than serving as the entrance. The Trigger history has no tab of its own: every Trigger, Decision, Ticket and dropped reply is in **Settings › Logs**, one filterable list that also answers `GET logs`, so a person can read the raw stream there and an agent can read the same thing without the panel. Sources no longer have a tab of their own: Overview shows each Source's state and its last day's counts, and Settings › Source holds their configuration. Until the repositories and the accounts are set up, Overview shows what is missing and links to the relevant setting.
 
 | Tab | Shows |
 | --- | --- |
 | Overview | Tickets needing action, system problems, one line per Source with its state, activity counts for the last 24 hours, and Executor load. Each block links to its detailed page |
-| Trigger | Threads filtered by Subscribed, Evaluating, New Triggers in 24 h, or All Threads. Each Thread shows its Triggers newest first, Decisions and Subscriptions |
-| Eval | Decisions with their reason and matched rules |
-| Execution | Executor state, Pause processing, and Tickets filtered by Open, Pending, Working, Waiting for a Trigger or Ended. Ticket details show actions, authorization, waiting Inputs, Subscriptions and Assignments |
-| Settings | Sources, Eval, Execution, Prompts and Deployment. Each group includes its save history |
+| Execution | The Ticket list filtered by Open, Pending, Working, Waiting for a Trigger or Ended, with Pause processing as the page action. Each Ticket shows its stage, and a running Ticket opens its Session from the row |
+| Eval | Metrics for the period (all Decisions, accept/reopen, stop, ignore, unavailable) above the Decision log, filtered by All, accept/reopen, stop, ignore, unavailable and by the last 24 hours. The selected Decision's reasons, matched rules and the context Eval saw are in the right-hand column; the row list is the history |
+| Settings | Sources, Eval, Execution, Prompts, Deployment and Logs. Each stage group includes its save history |
+| Settings › Logs | Every Trigger, Decision, Ticket event and dropped reply merged by time, filtered by kind, level (info, warn, error) and free text, with links back to the Thread, Decision or Ticket. The page says it is `GET /orchestrator/api/logs` |
 
 ### Reading individual records
 
@@ -54,7 +54,7 @@ A new Source appears throughout the panel without changes here. Register its `So
 
 1. **Focus on what matters.** Every element answers one of the three questions, or it is removed. A number appears only when it changes what the supervisor does.
 2. **Precise definitions.** Categories have checkable definitions, are mutually exclusive and cover every case, as the Ticket stages do. A label says whom a row waits for and what it needs, not an internal status code.
-3. **One place per concept.** Source state belongs in Source; Threads and Triggers in Trigger; Decisions in Eval; Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
+3. **One place per concept.** Source state belongs in Source; Decisions in Eval, raw Triggers and replies in Settings › Logs, Tickets in Execution. Settings are grouped by the concept they configure. Overview summarizes these pages and links to them instead of becoming another detailed view.
 4. **Domain structure.** The panel uses the domain terms. Internal identifiers appear only in folded details, and names replace identifiers where they can be resolved.
 5. **Honest state.** A count equals the length of the list it links to, and no state contradicts another fact.
 6. **Quiet by default.** Healthy states take no extra space. Problems must be actionable; a one-off network error is not enough. Rows needing a person offer their action directly. Keep page explanations to one sentence and put further detail in the (?) tooltip. Destructive actions require confirmation.

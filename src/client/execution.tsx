@@ -1,4 +1,4 @@
-/** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
+/** Execution page (the Ticket list, with the Executor pause as the page action) and Execution settings group (Executor capacity and workspace environment). */
 import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
@@ -10,7 +10,7 @@ import { settingsRoute } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { errorText, localized } from './text.ts'
-import { Card, ConfirmButton, Empty, Hint, LabelValue, ListSection, LoopTrack, PageHead, Section, StatusLine, Toolbar } from './widgets.tsx'
+import { ConfirmButton, Empty, Hint, ListSection, PageHead, Section, Toolbar } from './widgets.tsx'
 
 export function ExecutionStatus({ filter: current, state, reload }: {
   filter: TicketFilter; state: StateView; reload: () => Promise<void>
@@ -18,48 +18,27 @@ export function ExecutionStatus({ filter: current, state, reload }: {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(20)
   const { data, error, reload: reloadTickets } = usePoll(() => call('GET tickets', { query: { state: current, limit } }), [current, limit])
-  const { paused, load: { maxWorkers } } = state
+  const { paused } = state
   // Pausing uses its own block revision so toggling pause does not invalidate an open Execution settings draft.
   const pause = async () => { await call('POST executor/pause', { body: { paused: !paused } }); await reload() }
-  const status = state.setup.problem ? { tone: 'warning', label: t('executorWaitingSetup') } : paused ? { tone: 'warning',
-    label: t('processingPaused') }
-    : { tone: 'ongoing', label: t('executorRunning') }
   const action = paused ? 'resumeProcessing' : 'pauseProcessing'
   return <>
-    {/* 列表页模板（v2）：页面头（标题 + 说明 + 设置入口）→ 筛选条（Toolbar）→ 列表（ListSection 管四态）。
-        一级导航在顶部 TabBar，页面头不显示返回按钮。 */}
+    {/*
+      执行页只放工单列表：每一行自己带状态标（StageMark）与它会等谁，页面不再重复一层聚合状态。
+      暂停是整页唯一会作用于执行器的操作，放在页面头条目的动作区，和设置入口并排。
+    */}
     <PageHead back={false} title={t('term.ticket')} hint={t('executionStatusIntro')}>
+      <ConfirmButton variant="ghost" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)}
+        message={t(paused ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')} onConfirm={pause} />
       <Button variant="ghost" size="sm" icon={<Icon name="settings" />}
         onClick={() => navigate(settingsRoute('execution'))}>{t('tab.settings')}</Button>
     </PageHead>
-    {/* 状态行只放只读状态；暂停是页面级操作，走 StatusLine 的 actions 槽，不再挤在状态文字之间。 */}
-    <StatusLine actions={<ConfirmButton variant="outline" icon={paused ? 'play' : 'pause'} label={t(action)} title={t(action)}
-      message={t(paused ? 'resumeProcessingConfirm' : 'pauseProcessingConfirm')} onConfirm={pause} />}>
-      <span className="dt-status-text" data-state={status.tone}>{status.label}</span>
-      {!state.setup.problem && <>
-        <LabelValue label={t('executingLabel')} value={state.load.running + ' / ' + maxWorkers} />
-        <LabelValue label={t('queuedLabel')} value={state.load.queued} />
-      </>}
-    </StatusLine>
-    {/* 闭环定位条：执行页是闭环里「工作发生」的那一环，把前后环节一起摆出来，随时能跳到决策与评估去看。
-        只有「执行」标成 current（本页就是这一环），其余步骤不臆断完成状态；数字只用本页已有的 state.load。 */}
-    <Card title={t('loopTitle')} hint={t('loopHint')}>
-      <LoopTrack steps={[
-        { label: t('flowDecidedLabel'), hint: t('decisionLoop'), onSelect: () => navigate({ page: 'eval' }) },
-        { label: t('flowTickedLabel'), hint: t('term.ticket'), onSelect: () => navigate({ page: 'execution' }) },
-        { label: t('flowRunningLabel'), value: state.load.running, hint: `${state.load.queued} ${t('queuedLabel')}`,
-          state: 'current', onSelect: () => navigate({ page: 'execution' }) },
-        { label: t('flowEvaluatingLabel'), hint: t('flowJudgedLabel'), onSelect: () => navigate({ page: 'eval' }) },
-        { label: t('flowReturnedLabel'), hint: t('policyVersion'), onSelect: () => navigate(settingsRoute('eval')) },
-      ]} />
-    </Card>
     {/*
       四态统一交给 ListSection：首次加载的骨架出现在筛选条之前，筛选条只在拿到数据后渲染，
       避免加载途中先闪一排筛选项；空列表仍保留筛选条，用户可以立刻换一个过滤条件。
     */}
     <ListSection loading={!data} error={error ? errorText(error) : undefined} onRetry={() => { void reloadTickets() }}
       more={data?.next_offset != null} onMore={() => setLimit(limit + 20)}>
-      {/* v2：筛选 pills 走 Toolbar 左侧；页面级操作（暂停）留在 StatusLine 的 actions 槽。 */}
       <Toolbar>
         {TICKET_FILTERS.map(value => <Pill key={value} active={current === value}
           onClick={() => { setLimit(20); navigate({ page: 'execution', query: value === 'open' ? {} : { filter: value } },

@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, all, find, tab, click, type, text, field, at, openTab } from './fixtures/panel.tsx'
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -16,7 +16,8 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   // 列表页改用 PageHead：页面标题是真实名目（工单），不再有 StatusHead 的副标题。
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe(zh['term.ticket'])
   expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20')).toBe(true)
-  expect(text()).toContain(zh.executorRunning)
+  // 执行页只放列表：执行器状态不再做聚合状态行，暂停是页面头的动作。
+  expect(find(zh.pauseProcessing).textContent).toBe(zh.pauseProcessing)
   expect(all('.dt-chip').map(chip => chip.textContent)).toContain('GitHub#7自动合并已开启')
   await click(zh.idleLabel)
   expect(server.requests.some(request => request.path === 'tickets?state=idle&limit=20')).toBe(true)
@@ -24,7 +25,6 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   await click(zh['ticket.ended'])
   expect(text()).toContain('旧工单')
   expect(text()).toContain(zh['outcome.stopped'])
-  expect(all('.dt-status-line .dt-lv').map(item => item.textContent)).toEqual(['执行中 2 / 3', '排队 0'])
   // The pause is its own action: an Execution settings draft started before it still saves.
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
@@ -34,7 +34,6 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   await click(zh.pauseProcessing)
   await click(zh.confirm)
   expect(server.requests.find(request => request.path === 'executor/pause')).toMatchObject({ method: 'POST', body: { paused: true } })
-  expect(text()).toContain(zh.processingPaused)
   expect(find(zh.resumeProcessing).textContent).toBe(zh.resumeProcessing)
   await click(tab(zh['tab.settings']))
   await click(zh.save)
@@ -74,7 +73,7 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   expect(all('.dt-disclosure-body .dt-table tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR/w/t1',
     'DSH_SUPERAGENT_GITHUB_NUMBER—'])
   await click(document.querySelector<HTMLElement>('.dt-trigger-link')!)
-  expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
+  expect(tab(zh['tab.eval']).getAttribute('aria-selected')).toBe('true')
 })
 
 it('reports a missing Ticket instead of rendering an empty page', async () => {
@@ -101,7 +100,7 @@ it('links a question to its Channel, folds consecutive automated messages among 
   expect(all('.dt-disclosure-body .dt-row-title').map(title => title.textContent)).toEqual(['自动通知：CI of PR #42 at abc1234: 10 checks, 1 failed, 0 running.'])
   await click('同一发送者之前还有 1 条自动消息')
   expect(text()).toContain('CI of PR #42 at abc1234: 10 checks, 0 failed, 0 running.')
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(text()).not.toContain('到期后记为未完成')
   const tip = field(zh.evalTimeout).closest('.dt-field')!.querySelector<HTMLElement>('.dt-info')!
@@ -227,16 +226,13 @@ it('sends one stop for a double click on Confirm', async () => {
   expect(server.requests.filter(request => request.path === 'tickets/t1/stop')).toHaveLength(1)
 })
 
-it('places Execution inside the loop, with the running count as the current step', async () => {
+it('keeps Execution to the Ticket list alone, without the loop card or an aggregate status line', async () => {
   server.tickets.open = [ticketSummary()]
   await mount()
   await click(tab(zh['tab.execution']))
-  // 执行页是闭环里「工作发生」的一环：前后环节都要在，当前步固定是执行，并带真实的运行/排队数。
-  expect(all('.dt-loop-step .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowDecidedLabel,
-    zh.flowTickedLabel, zh.flowRunningLabel, zh.flowEvaluatingLabel, zh.flowReturnedLabel])
-  expect(all('.dt-loop-step[data-state="current"] .dt-loop-label').map(label => label.textContent)).toEqual([zh.flowRunningLabel])
-  expect(document.querySelector('.dt-loop-step .dt-loop-hint')?.textContent).toBe(zh.decisionLoop)
-  // 「评估」这一步通向评估页，「回流策略」通向政策设置的评估分组。
-  await click(all('.dt-loop-link')[3]!)
-  expect(tab(zh['tab.eval']).getAttribute('aria-selected')).toBe('true')
+  // 执行页只放工单列表：闭环定位卡与聚合状态行都收掉了，状态由每行自己的 StageMark 表达。
+  expect(all('.dt-loop-step')).toEqual([])
+  expect(document.querySelector('.dt-status-line')).toBeNull()
+  expect(all('.dt-ticket')).toHaveLength(1)
+  expect(all('.dt-ticket .dt-stage').map(stage => stage.textContent).filter(Boolean).length).toBeGreaterThan(0)
 })

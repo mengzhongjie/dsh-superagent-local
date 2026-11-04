@@ -97,7 +97,8 @@ export function usePoll<T>(load: () => Promise<T>, deps: readonly unknown[], int
   return { data: state.data, error: state.error, reload }
 }
 
-export const DECISION_FILTERS = ['work', 'stop', 'ignore', 'unavailable', 'all'] as const
+// 「全部」排第一：评估页默认看这段时间的每一条判定，筛选是收窄，不是入口。
+export const DECISION_FILTERS = ['all', 'work', 'stop', 'ignore', 'unavailable'] as const
 export type DecisionFilter = typeof DECISION_FILTERS[number]
 export const DECISION_KINDS: Readonly<Record<DecisionFilter, string>> = { work: 'accept,reopen', stop: 'stop', ignore: 'ignore',
   unavailable: 'unavailable', all: '' }
@@ -128,6 +129,7 @@ export type ThreadRow = ApiResponse<'GET threads'>['items'][number]
 export type ThreadPageView = ApiResponse<'GET threads/:key'>
 export type TriggerRow = ThreadPageView['timeline'][number]
 export type DecisionRow = ApiResponse<'GET decisions'>['items'][number]
+export type LogRow = ApiResponse<'GET logs'>['items'][number]
 export type Problem = ApiResponse<'GET overview'>['problems'][number]
 export type DroppedReply = SourceStatusRow['dropped'][number]
 export type SearchView = ApiResponse<'GET search'>

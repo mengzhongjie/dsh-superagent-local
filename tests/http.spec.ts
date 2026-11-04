@@ -70,14 +70,18 @@ it('decodes path parameters and parses each route\'s query', async () => {
   const seen: unknown[] = []
   const call = serve({
     store: { settings: () => SettingsSchema.parse({}),
-      read: { decisions: (filter: unknown, offset: number, limit: number) => { seen.push({ filter, offset, limit }); return { items: [], more: false } } } },
+      read: { decisions: (filter: unknown, offset: number, limit: number) => { seen.push({ filter, offset, limit }); return { items: [], more: false } },
+        // 指标条另走一次按 kind 的计数，桩返回空分布即可，路由只要求它存在。
+        decisionCounts: () => ({}) } },
     links: () => () => ({ url: '', label: { zh: '', en: '' } }),
     engine: { unsubscribe: (key: string) => { seen.push(key); return true } },
     sessions: { delivery: async () => 'injected' },
   })
   expect(await call('POST', `threads/${encodeURIComponent('feishu:oc_1:om/root')}/unsubscribe`)).toMatchObject({ status: 200, body: { context_delivery: 'injected' } })
   // Invalid offsets default to 0, and limits above the route maximum are clamped.
-  expect(await call('GET', 'decisions?kind=accept%2Creopen&limit=500&offset=x&window=24h')).toEqual({ status: 200, body: { items: [], next_offset: null } })
+  // summary 是这段时间按 kind 的分布（指标条用），桩返回空分布。
+  expect(await call('GET', 'decisions?kind=accept%2Creopen&limit=500&offset=x&window=24h')).toEqual({ status: 200,
+    body: { items: [], next_offset: null, summary: { total: 0, byKind: {} } } })
   expect(seen).toEqual(['feishu:oc_1:om/root', { filter: { kinds: ['accept', 'reopen'], since: expect.any(String) }, offset: 0, limit: 200 }])
 })
 

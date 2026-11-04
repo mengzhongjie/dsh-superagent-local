@@ -32,19 +32,21 @@ export function TicketLine({ ticket, question, onChanged, context }: {
       </div>
       {/* Always render the actions container so every Ticket row keeps a uniform three-line height. */}
       {/* v2 行原语：操作统一收在行尾的 .dt-row-actions，与详情页的 Assignment 行同一收尾位置。 */}
-      <div className="dt-ticket-actions dt-row-actions">{onChanged && <>
+      <div className="dt-ticket-actions dt-row-actions">
         {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
           answer.source) })}</ActionLink>}
-        {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
-          message={t('retryConfirm', { title: ticket.title })}
-          onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
+        {(ticket.actions.retry || ticket.actions.stop) && onChanged && <>
+          {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
+            message={t('retryConfirm', { title: ticket.title })}
+            onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
+        </>}
         {/* 工单的 worker 会话在侧栏里是隐藏的（hideOwn 藏掉了 worker-* 行），列表行必须给出入口：
-            只要这张工单已经有会话就显示，不再只在可重试时才显示。 */}
+            只要这张工单已经有会话就显示，与它当前在等谁无关（执行中的工单也要能一键打开会话）。 */}
         {ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
-        {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
+        {ticket.actions.stop && onChanged && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
           message={t('stopConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
-      </>}</div>
+      </div>
     </div>
   </li>
 }
@@ -82,7 +84,10 @@ export function ThreadLine({ thread, ticketId, context }: { thread: ThreadRow; t
   </li>
 }
 
-export function DecisionLine({ decision }: { decision: DecisionRow }) {
+/** 判定行。选中进右栏时传 `onSelect`（Eval 页），否则点标题直接跳到它的线程/工单（线程页的披露区）。 */
+export function DecisionLine({ decision, selected, onSelect }: {
+  decision: DecisionRow; selected?: boolean; onSelect?: () => void
+}) {
   const { t, navigate } = usePanel()
   const matched = decision.rules.filter(rule => rule.matched).map(rule => rule.name)
   const mark = decisionMark(t, decision.outcome)
@@ -90,9 +95,10 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
   const reason = decision.reason ? reasonLabel(t, decision.reason) : ''
   // 闭环可见性：行内保留规则命中数与关联工单入口，二者都取自这条决策自身的字段。
   const ticketId = decision.ticketId
-  const open = () => decision.ticketId ? navigate({ page: 'execution', id: decision.ticketId })
-    : navigate({ page: 'trigger', id: decision.thread, query: { trigger: decision.triggerIds[0] ?? '' } })
-  return <li className="dt-row dt-link dt-ticket">
+  const open = onSelect ?? (() => decision.ticketId ? navigate({ page: 'execution', id: decision.ticketId })
+    : navigate({ page: 'trigger', id: decision.thread, query: { trigger: decision.triggerIds[0] ?? '' } }))
+  return <li className="dt-row dt-link dt-ticket" data-selected={selected || undefined}
+    aria-current={selected ? 'true' : undefined}>
     <div className="dt-ticket-stage"><StageMark state={mark.dot} icon={mark.icon} label={mark.label} /></div>
     <div className="dt-ticket-body">
       <div className="dt-row-title">

@@ -51,6 +51,11 @@ export function find(name: string, selector = CONTROLS): HTMLElement {
   return match
 }
 export const tab = (name: string) => find(name, '[role="tab"]')
+/** 打开日志页并切到指定子视图：一级 Tab「日志」+ 页面内的「触发 / 评估」。 */
+/** 一级导航只剩四个页签：打开某一页就是点它一次。 */
+export async function openTab(label: string) {
+  await click(label)
+}
 export async function click(target: string | HTMLElement) {
   const element = typeof target === 'string' ? find(target) : target
   await act(async () => { element.click() })

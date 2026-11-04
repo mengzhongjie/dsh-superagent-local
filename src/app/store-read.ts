@@ -64,6 +64,18 @@ export function storeReads(db: DatabaseSync) {
       .all(...options.kinds, ...(options.since ? [options.since] : []), limit + 1, offset)
     return { items: rows.slice(0, limit).map(row => JSON.parse(String(row.value)) as Decision), more: rows.length > limit }
   },
+  /**
+   * Counts decisions by kind whose triggers arrived at or after `since`, using the same window rule as `decisions`.
+   * The Eval page's metric strip reports what was decided in the period, not the kind-filtered page being read.
+   */
+  decisionCounts: (since: string): Record<string, number> => {
+    const window = since
+      ? "EXISTS (SELECT 1 FROM json_each(json_extract(d.value, '$.triggerIds')) j JOIN trigger t ON t.id = j.value WHERE t.at >= ?)"
+      : '1'
+    const rows = db.prepare(`SELECT json_extract(d.value, '$.kind') AS kind, COUNT(*) AS n FROM decision d WHERE ${window} GROUP BY kind`)
+      .all(...(since ? [since] : [])) as { kind: string; n: number }[]
+    return Object.fromEntries(rows.map(row => [String(row.kind), Number(row.n)]))
+  },
   /** Newest decisions of the given kinds, for surfaces that must surface rare outcomes among many ignores. */
   decisionsOfKinds: (kinds: string[], limit = 30): Decision[] => db.prepare(`SELECT value FROM decision WHERE json_extract(value, '$.kind') IN (${kinds.map(() => '?').join(',')}) ORDER BY rowid DESC LIMIT ?`).all(...kinds, limit).map(row => JSON.parse(String(row.value)) as Decision),
   /** Messages whose `reply` effect failed, with consecutive failure count and last error, oldest first. */

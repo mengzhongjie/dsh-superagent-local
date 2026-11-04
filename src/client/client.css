@@ -257,10 +257,6 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-subtab:focus-visible { outline: var(--dt-focus); outline-offset: 2px; border-radius: var(--dt-radius-sm); }
 .dt-status-head { display: flex; align-items: center; gap: var(--dt-space-2); }
 .dt-status-title { margin: 0; display: flex; align-items: center; gap: var(--dt-space-1); font-size: var(--dt-fs-block); line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
-.dt-status-text { margin-left: auto; flex: none; font-size: var(--dt-fs-meta); font-weight: 400; color: var(--dsw-alias-label-secondary); }
-.dt-status-line .dt-status-text { margin-left: 0; }
-.dt-status-text[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }
-.dt-status-text[data-state='error'] { color: var(--dsw-alias-state-error-primary); }
 .dt-lv { white-space: nowrap; }
 .dt-lv-label { color: var(--dsw-alias-label-caption); }
 .dt-lv-value { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
@@ -307,6 +303,9 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-table td { padding: var(--dt-space-1) var(--dt-space-2) var(--dt-space-1) 0; border-top: 0.5px solid var(--dsw-alias-border-l3); vertical-align: top; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 .dt-list > .dt-ticket { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: var(--dt-space-3); align-items: start; margin: 0; padding: var(--dt-space-3) var(--dt-space-2) var(--dt-space-3) var(--dt-space-4); border-radius: 0; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }
 .dt-list > .dt-ticket[data-state]::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 2px; border-radius: 1px; background: var(--dsw-alias-state-warn-primary); opacity: 0.7; }
+/* 选中的那一条：右栏正在讲的就是它，用一层淡底 + 左侧色条说明两者的对应关系。 */
+.dt-list > .dt-ticket[data-selected] { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent); }
+.dt-list > .dt-ticket[data-selected]::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 2px; border-radius: 1px; background: var(--dsw-alias-brand-primary); }
 .dt-list > .dt-ticket[data-state='error']::before { background: var(--dsw-alias-state-error-primary); }
 .dt-ticket-stage { align-self: stretch; padding-top: 1px; border-right: 0.5px solid var(--dsw-alias-border-l3); }
 .dt-ticket-body { display: flex; flex-direction: column; gap: var(--dt-space-1); min-width: 0; }
@@ -476,6 +475,17 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-detail-solo { grid-template-columns: minmax(0, 1fr); }
 .dt-detail-main { display: flex; flex-direction: column; gap: var(--dt-space-4); min-width: 0; }
 .dt-detail-aside { position: sticky; top: var(--dt-space-4); display: flex; flex-direction: column; gap: var(--dt-space-4); min-width: 0; }
+/* ===== 评估页右栏：一条判定的解剖 ===== */
+.dt-detail-card { gap: var(--dt-space-2); }
+.dt-detail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--dt-space-2); }
+.dt-detail-title { margin: 0; font-size: var(--dt-fs-sub); font-weight: 600; line-height: var(--dt-lh-title); overflow-wrap: anywhere; }
+.dt-detail-quote { margin: 0; padding: var(--dt-space-2) var(--dt-space-3); border-left: 2px solid var(--dt-border-color, var(--dsw-alias-border-l3)); border-radius: 0 var(--dt-radius) var(--dt-radius) 0; background: var(--dsw-alias-interactive-bg-hover); font-size: var(--dt-fs-meta); line-height: 1.5; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.dt-detail-block { display: flex; flex-direction: column; gap: var(--dt-space-1); min-width: 0; }
+.dt-detail-label { font-size: var(--dt-fs-meta); color: var(--dsw-alias-label-caption); }
+.dt-detail-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--dt-space-1); }
+.dt-detail-rules > li { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dt-detail-rules .dt-chip { align-self: flex-start; }
+.dt-detail-context { margin: 0; font-size: var(--dt-fs-meta); line-height: 1.5; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 .dt-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--dt-space-3) var(--dt-space-4); }
 /* 动效尊重系统偏好：关掉动画时只保留状态差异，不做过渡。 */
 /* 第一处：页面骨架级——AppBar 折行、面包屑收起、内容区收窄留白；页面级标题降一档字号。 */
@@ -543,3 +553,15 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
   .dt-source-card { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dt-source-card-meta { text-align: right; }
 }
+
+/* 设置 › 日志：一行一条记录——时间 / 类型 / 正文 / 细节；注意与错误的行左侧有配色条。 */
+.dt-log-list { list-style: none; margin: 0 -8px; padding: 0; display: flex; flex-direction: column; }
+.dt-log { position: relative; display: grid; grid-template-columns: 96px 56px minmax(0, 1fr) minmax(0, 200px); column-gap: var(--dt-space-3); align-items: baseline; padding: var(--dt-space-2) var(--dt-space-2) var(--dt-space-2) var(--dt-space-4); border-bottom: 0.5px solid var(--dsw-alias-border-l3); font-size: var(--dt-fs-body); line-height: 1.5; }
+.dt-log::before { content: ''; position: absolute; left: 6px; top: 10px; bottom: 10px; width: 2px; border-radius: 1px; background: var(--dsw-alias-border-l2); }
+.dt-log[data-level='warn']::before { background: var(--dsw-alias-state-warn-primary); }
+.dt-log[data-level='error']::before { background: var(--dsw-alias-state-error-primary); }
+.dt-log-kind { color: var(--dsw-alias-label-caption); font-size: var(--dt-fs-meta); }
+.dt-log-text { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-log-text:hover:not(:disabled) { text-decoration: underline; }
+.dt-log-text:disabled { cursor: default; color: var(--dsw-alias-label-secondary); }
+.dt-log-detail { color: var(--dsw-alias-label-caption); font-size: var(--dt-fs-meta); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

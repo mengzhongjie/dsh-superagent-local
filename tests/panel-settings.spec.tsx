@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { Fields } from '../src/client/settings-kit.tsx'
 import { expect, it, onTestFinished } from 'vitest'
 import { zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, openTab } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -25,7 +25,7 @@ it('keeps a person\'s own value where another save changed the same setting, and
 
 it('saves the Eval block on the Policy settings and the Executor with its execution environment on the Execution settings, each against its own revision', async () => {
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   await click(zh['mode.auto'])
   await type(field<HTMLInputElement>(zh.evalTimeout), '180')
@@ -66,7 +66,7 @@ it('loads configuration history on demand with localized changes, Source field l
     changes: [{ code: 'mode', from: 'off', to: 'observe' }, { code: 'sourceRowsAdded', source: 'feishu', field: 'allowed', items: ['Bob'],
       part: true }, { code: 'sourceField', source: 'feishu', field: 'syncChat', from: '', to: 'oc_team', part: true }] }] }
   await mount()
-  await click(zh['tab.eval'])
+  await openTab(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-page-head button'))
   expect(server.requests.some(request => request.path === 'policy/history')).toBe(false)
   await click(zh.configHistory)
@@ -128,20 +128,18 @@ it('lists the settings groups stages first, opens each stage\'s group from its s
   async () => {
   await mount()
   await click(tab(zh['tab.settings']))
-  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual(['来源', '评估', '执行', '提示词', '部署'])
+  expect(all('.dt-settings-link').map(link => link.textContent)).toEqual(['来源', '评估', '执行', '提示词', '部署', '日志'])
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
   // 来源页已删除，它的状态不再有「设置」入口；剩下评估与执行两个阶段仍从各自状态页跳过来。
-  for (const [tab, group] of [['评估', '评估'], ['执行', '执行']] as const) {
-    await click(find(tab, '[role="tab"]'))
-    await click(find(zh['tab.settings'], '.dt-page-head button'))
-    expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(group)
-  }
-  // The Trigger stage has no settings, so its status offers none.
-  await click(tab(zh['tab.trigger']))
-  expect(all('.dt-page-head button').map(button => button.textContent)).not.toContain(zh['tab.settings'])
+  // 评估视图的设置入口在日志页头上；执行页的设置入口在执行页头上。
+  await openTab(zh['tab.eval'])
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe('评估')
+  await click(tab(zh['tab.execution']))
+  await click(find(zh['tab.settings'], '.dt-page-head button'))
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe('执行')
   await click(tab(zh['tab.settings']))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
-  await click(tab(zh['tab.trigger']))
   await remount()
   await click(tab(zh['tab.settings']))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])

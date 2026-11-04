@@ -31,6 +31,7 @@ import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
+import { logList, type LogKind, type LogLevel } from './views/logs.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
@@ -238,6 +239,8 @@ const ThreadQuery = z.object({ limit: limit(50, 100), before: z.string().optiona
 const DecisionsQuery = z.object({ kind: z.string().default(''), window: z.literal('24h').optional().catch(undefined), offset,
   limit: limit(30, 200) })
 const count = z.coerce.number().int().nonnegative()
+const LogsQuery = z.object({ kind: z.string().default(''), level: z.string().default(''), q: z.string().max(200).default(''),
+  window: z.literal('24h').optional().catch(undefined), offset: count.default(0), limit: limit(100, 500) })
 const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
 const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
@@ -286,6 +289,11 @@ function routes(runtime: HttpHost): Routes {
       return decisionList(views(runtime), kind.split(',').filter(Boolean), offset, limit, since)
     },
     'POST decisions/:id/dismiss': ({ params }) => { runtime.engine.dismiss(params.id); return { dismissed: true } },
+    'GET logs': ({ query }) => {
+      const { kind, level, q, window, offset, limit } = LogsQuery.parse(query)
+      const since = window ? new Date(Date.now() - 86_400_000).toISOString() : ''
+      return logList(views(runtime), { kind: kind.split(',').filter(Boolean) as LogKind[], level: level.split(',').filter(Boolean) as LogLevel[], q, since, offset, limit })
+    },
     'GET tickets': ({ query }) => {
       const { state, offset, limit } = TicketsQuery.parse(query)
       return ticketList(views(runtime), state, offset, limit)

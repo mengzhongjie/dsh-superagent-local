@@ -4,6 +4,7 @@ import type { StateView } from './api.ts'
 import { Dot } from './controls.tsx'
 import { DeploymentPage, type DeploymentForm } from './deployment.tsx'
 import { EvalSettings } from './eval.tsx'
+import { LogsSettings } from './logs.tsx'
 import { ExecutionSettings } from './execution.tsx'
 import { PromptsPage } from './prompts.tsx'
 import { usePanel } from './provider.tsx'
@@ -72,6 +73,7 @@ export function SettingsPage({ group, query, state, deploymentForm }: {
       case 'execution': return <ExecutionSettings />
       case 'prompts': return <PromptsPage />
       case 'deployment': return <DeploymentPage setup={state.setup} form={deploymentForm} />
+      case 'logs': return <LogsSettings />
     }
   })()
   // Provider 包整屏：左右两栏读同一份查询，左栏不必再发一次请求，也不会被右栏的加载态抽走。

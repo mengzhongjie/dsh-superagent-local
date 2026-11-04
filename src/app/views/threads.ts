@@ -90,6 +90,11 @@ export type SearchView = ReturnType<typeof search>
 export function decisionList(host: ViewHost, kinds: string[], offset: number, limit: number, since = '') {
   const { items, more } = host.store.read.decisions({ kinds, since }, offset, limit)
   const view = snapshot(host)
-  return { items: items.map(decision => decisionView(view, decision)), next_offset: more ? offset + limit : null }
+  // 指标条要的是这段时间里「所有」判定的分布，所以按 kind 单独统计一次，不受当前筛选影响；
+  // 否则用户切到「忽略」时，指标会把总数也报成忽略数。
+  const byKind = host.store.read.decisionCounts(since)
+  const total = Object.values(byKind).reduce((sum, count) => sum + count, 0)
+  return { items: items.map(decision => decisionView(view, decision)), next_offset: more ? offset + limit : null,
+    summary: { total, byKind } }
 }
 export type DecisionListView = ReturnType<typeof decisionList>
