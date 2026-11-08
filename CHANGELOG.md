@@ -2,6 +2,24 @@
 
 本仓库是 dsh-superagent（研究方向原型）的本地改造版。下面是相对上游 0.1.0 的改动。
 
+## 0.2.2 — 2026-11-08
+
+### 修复：展开工作区时下面那一组会先弹一下
+
+- 插件自建会话（`worker-` / `orchestrator-`）原来靠 `MutationObserver` 在行渲染之后写
+  行内 `display: none`（`hide` / `hideOwn`）。宿主的侧栏列表用 FLIP 动画
+  （`AnimatedRows`）：React 提交那一帧就把所有行摆好，并在同一个 tick 里读每行的
+  `getBoundingClientRect` 当动画起点。观察者回调写在提交之后，宿主量到的还是"这些行还在"
+  的更高布局，随后行被压掉，列表实际只长高一小截 —— 动画从过高起点下落，就是视觉上的弹一下。
+- 新增 `src/client/sidebar-hide.ts`：把"插件自建会话不占一行"写成静态样式表，
+  在 `installMainSessionEntry` 里挂到 `document.head`（`data-superagent-sidebar-hide` 标记，
+  卸载时移除）。静态规则在首次布局之前就生效，宿主量到的就是最终布局。
+- `hide()` / `hideOwn()` 改成先看 computed `display`：样式表已经收起这一行时不再写行内
+  `style.display`，观察者每轮跑一遍也只剩一次布局变更。标题为 `superagent` 的伪工作区行
+  仍只能靠观察者（CSS 不能按文本匹配）。
+- 实测（macOS 桌面版宿主，1.15 页面缩放，装主题与另一个插件）：修复前下方组首帧比落点高
+  34px（过冲比例 0.5），修复后 0；纯宿主基线本来就是 0。
+
 ## 0.2.0 — 2026-11-01
 
 ### 新增：需求来自本机操作者

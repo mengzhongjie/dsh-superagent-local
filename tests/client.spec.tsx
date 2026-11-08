@@ -14,19 +14,22 @@ type Entry = { options: { name: string; id?: string; key?: string; order?: numbe
 const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
 function fixture(listed: string[]) {
   const entries: Entry[] = []
+  // ctx.effect 注册的卸载函数：测试结束时可以真的卸载，不让观察者在环境销毁后还活着（会报 document 未定义）。
+  const disposers: (() => void)[] = []
   const dictionaries: Record<string, unknown> = {}
   const ctx = {
     slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-    effect: (effect: () => unknown) => { effect() },
+    effect: (effect: () => unknown) => { const dispose = effect(); disposers.push(typeof dispose === 'function' ? dispose as () => void : () => {}) },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
     uiWorkspace: { openSession: vi.fn() },
     // Omit config form service so Deployment renders read-only.
     get: () => undefined,
   }
   apply(ctx as never)
+  mounted.push(...disposers)
   const entry = (name: string) => entries.find(item => item.options.name === name)!
-  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist') }
+  return { ctx, entries, dictionaries, disposers, main: entry('main'), nav: entry('sidebar.panellist') }
 }
 async function render(entry: Entry, props: Record<string, unknown>) {
   const container = document.createElement('div'); document.body.append(container)
@@ -47,7 +50,12 @@ const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     setup: { machine: { stateDir: '/srv/state', worktreeRoot: '/srv/state/worktrees', blockedCommands: [], promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 }, problem: null, feishuProblem: null, accounts: null } })
   return Response.json({ error: 'unavailable' }, { status: 503 })
 }))
-afterEach(() => { vi.unstubAllGlobals() })
+// 每个 fixture 注册的卸载函数：测试结束统一撤掉，避免观察者在 jsdom 销毁之后还被回调。
+const mounted: (() => void)[] = []
+afterEach(() => {
+  for (const dispose of mounted.splice(0)) dispose()
+  vi.unstubAllGlobals()
+})
 
 it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
   const { entries, dictionaries, main, nav } = fixture([])
@@ -143,3 +151,38 @@ it('tells a dsh-superagent that does not answer from a record it does not have, 
   expect(await failure(async () => Response.json({ error: 'Unknown ticket', code: 'unknownTicket' }, { status: 404 }))).toEqual({
     message: 'user unknownTicket', status: 404, missing: true, unreachable: false })
 })
+
+it('keeps its own sessions out of the sidebar with a mounted stylesheet, so no row is hidden after the host has measured the list', async () => {
+  // 静态样式表是这次修复的核心：宿主的列表动画在 React 提交那一帧就读位置，
+  // 事后写行内 display 会晚一步，于是下面的组先弹一下。这里断言两件事：
+  // ①样式表确实挂上且带着前缀规则；②行被样式表收起时不写行内 style（少一次布局变更）。
+  const { disposers } = fixture([])
+  const style = document.head.querySelector('[data-superagent-sidebar-hide]')
+  expect(style).not.toBeNull()
+  expect(style!.textContent).toContain('[data-row-key^="session:worker-"]')
+  expect(style!.textContent).toContain('[data-row-key^="session:orchestrator-"]')
+  const row = document.createElement('div')
+  row.setAttribute('data-row-key', 'session:worker-abc')
+  document.body.append(row)
+  // 等观察者跑一轮：它会调 hide/hideOwn，这两个函数不该再写行内 display。
+  for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  expect(window.getComputedStyle(row).display).toBe('none')
+  expect(row.style.display).toBe('')
+  // 人自己的会话行不受影响；工作区行仍然照常挂上主会话入口按钮。
+  const person = document.createElement('div')
+  person.setAttribute('data-row-key', 'session:person-abc')
+  document.body.append(person)
+  const group = document.createElement('div')
+  group.setAttribute('data-row-key', 'workspace:ws1')
+  group.textContent = 'demo'
+  document.body.append(group)
+  for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  expect(window.getComputedStyle(person).display).not.toBe('none')
+  expect(group.querySelector('[data-main-session-entry]')).not.toBeNull()
+  // 卸载：观察者停下、样式表移除，宿主侧栏回原样（只认这一份，前面用例留下的表另有主）。
+  for (const dispose of disposers) dispose()
+  expect([...document.head.querySelectorAll('[data-superagent-sidebar-hide]')].includes(style as HTMLStyleElement)).toBe(false)
+  row.remove(); person.remove(); group.remove()
+  document.querySelectorAll('[data-main-session-entry]').forEach(button => button.remove())
+})
+

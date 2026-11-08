@@ -409,6 +409,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/marks.ts` | The marks of the states the views classify: a Ticket's or a Thread's stage, a Source's state and a Decision's outcome, each as a dot, an icon, a tone and a label |
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
+| `src/client/sidebar-hide.ts` | The stylesheet text that keeps the plugin's own sessions out of the sidebar from the first layout on, so the host's list animation measures the final layout instead of a taller one |
 
 `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./local-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu disabled.
 

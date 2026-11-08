@@ -11,6 +11,7 @@ import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-ma
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
+import { SIDEBAR_HIDE_STYLE } from './sidebar-hide.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { keepFrameInPlace } from './frame.ts'
@@ -48,6 +49,24 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
 
 /** 按钮上的标记属性：既用来找自己，也用来避免重复插入。 */
 const ENTRY_ATTR = 'data-main-session-entry'
+/** 我们用静态样式表收起自己会话行时打在这张 <style> 上的标记，卸载时按它移除。 */
+const HIDE_STYLE_ATTR = 'data-superagent-sidebar-hide'
+/** 标记为「已由样式表收起」的行；行内再写 style.display 只会多一次布局变更，没有必要。 */
+const isHiddenBySheet = (row: HTMLElement): boolean => window.getComputedStyle(row).display === 'none'
+/**
+ * 把「插件自建会话不占一行」写成静态样式表。
+ *
+ * 必须静态：宿主列表用 FLIP 动画，React 提交那一帧就量好所有行的位置当动画起点；
+ * 靠 MutationObserver 事后写行内 display，量的时候行还在，动画就从过高起点下落（弹一下）。
+ * 样式表在首次布局之前就生效，宿主量到的直接是最终布局。
+ */
+function mountHideStyle(): () => void {
+  const style = document.createElement('style')
+  style.setAttribute(HIDE_STYLE_ATTR, '1')
+  style.textContent = SIDEBAR_HIDE_STYLE
+  document.head.append(style)
+  return () => style.remove()
+}
 
 /**
  * 侧栏工作区组标题行的「主会话」入口。
@@ -92,6 +111,9 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
       // 测试宿主没有 CSS.escape，回退成原样拼接；会话 id 只含字母数字和连字符。
       const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(id) : id
       for (const row of document.querySelectorAll<HTMLElement>(`[data-row-key="session:${escaped}"]`)) {
+        // 静态样式表已经把 worker- / orchestrator- 前缀的行收起；这时再写行内 none
+        // 只会多一次布局变更（观察者每轮 DOM 变动都会跑一遍），没有必要。
+        if (isHiddenBySheet(row)) continue
         if (row.style.display !== 'none') row.style.display = 'none'
       }
     }
@@ -126,6 +148,8 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
   const hideOwn = () => {
     for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="session:"]')) {
       if (!ours(rowId(row))) continue
+      // 与 hide() 同理：前缀规则已把它收起时就别再写行内 style。
+      if (isHiddenBySheet(row)) continue
       if (row.style.display !== 'none') row.style.display = 'none'
     }
     for (const row of document.querySelectorAll<HTMLElement>('[data-row-key^="workspace:"]')) {
@@ -243,13 +267,16 @@ function installMainSessionEntry(ctx: ClientContext, t: T): () => void {
     hideOwn()
     void syncHidden()
   }
+  // 先挂静态样式表：宿主列表的 FLIP 动画在 React 提交那一帧就量位置，
+  // 任何「事后写行内 display」的做法都晚一步，会让下面的组先弹一下。
+  const unmountStyle = mountHideStyle()
   // 侧栏是 React 渲染的，重渲染会抹掉外部插入的节点和行上的 display，所以持续观察并补回。
   const observer = new MutationObserver(insert)
   observer.observe(document.body, { childList: true, subtree: true })
   insert()
   // 先把手里的主子取到，隐藏才能开始生效；拿不到就只保留按钮，不影响使用。
   void mainState().then(state => { if (state.masterIds?.length) { hidden = state.masterIds; insert() } })
-  return () => observer.disconnect()
+  return () => { observer.disconnect(); unmountStyle() }
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']
